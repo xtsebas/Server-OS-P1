@@ -30,3 +30,4 @@ Thumbs.db
 conan.lock
 conanbuildinfo.txt
 vcpkg_installed/
+/boost_1_87_0/

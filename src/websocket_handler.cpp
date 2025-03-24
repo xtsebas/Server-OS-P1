@@ -49,40 +49,60 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
 
 void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::string &data, bool is_binary)
 {
-    std::lock_guard<std::mutex> lock(connections_mutex);
-
     std::string sender = "Desconocido";
-    for (auto &[username, conn_data] : connections)
+
+    // Buscamos al usuario sin mutex aquí
     {
-        if (conn_data.conn == &conn)
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        for (auto &[username, conn_data] : connections)
         {
-            sender = username;
-            break;
+            if (conn_data.conn == &conn)
+            {
+                sender = username;
+                break;
+            }
         }
     }
 
     Logger::getInstance().log("Mensaje recibido de " + sender + ": " + data);
 
-    // Intentar parsear JSON (estado)
     auto json = crow::json::load(data);
-    if (json && json.has("type") && json["type"].s() == "status_update")
-    {
-        std::string new_status = json["status"].s();
-        if (new_status == "ACTIVO")
-            update_status(sender, UserStatus::ACTIVO);
-        else if (new_status == "OCUPADO")
-            update_status(sender, UserStatus::OCUPADO);
-        else if (new_status == "INACTIVO")
-            update_status(sender, UserStatus::INACTIVO);
-        return;
+    if (json) {
+        if (json.has("type") && json["type"].s() == "status_update") {
+            std::string new_status = json["status"].s();
+            if (new_status == "ACTIVO")
+                update_status(sender, UserStatus::ACTIVO);
+            else if (new_status == "OCUPADO")
+                update_status(sender, UserStatus::OCUPADO);
+            else if (new_status == "INACTIVO")
+                update_status(sender, UserStatus::INACTIVO);
+            return;
+        }
+
+        if (json.has("type") && json["type"].s() == "private") {
+            if (!json.has("to") || !json.has("message")) {
+                Logger::getInstance().log("ERROR: mensaje privado malformado.");
+                return;
+            }
+
+            std::string recipient = json["to"].s();
+            std::string msg = json["message"].s();
+
+            Logger::getInstance().log("DEBUG: Se detectó mensaje privado de " + sender +
+                " hacia " + recipient + " contenido: " + msg);
+
+            send_private_message(sender, recipient, msg);
+            return;
+        }
     }
 
     // Broadcast normal
+    std::lock_guard<std::mutex> lock(connections_mutex);
     for (auto &[_, conn_data] : connections)
     {
         if (conn_data.conn)
         {
-            conn_data.conn->send_text(sender + ": " + data);
+            conn_data.conn->send_text(sender + ": " + data + "\n");
         }
     }
 }
@@ -140,4 +160,53 @@ std::string WebSocketHandler::list_users()
         oss << "- " << username << " (" << status_str << ")\n";
     }
     return oss.str();
+}
+
+void WebSocketHandler::send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg)
+{
+    Logger::getInstance().log("DEBUG: send_private_message FROM=" + sender +
+                          " TO=" + recipient + " MSG=" + msg);
+
+    crow::websocket::connection* recipient_conn = nullptr;
+    crow::websocket::connection* sender_conn = nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+
+        // Buscar destinatario
+        auto it = connections.find(recipient);
+        if (it != connections.end()) {
+            Logger::getInstance().log("AQUI SI ENTRO1");
+            recipient_conn = it->second.conn;
+        }
+
+        // Buscar emisor
+        auto sender_it = connections.find(sender);
+        if (sender_it != connections.end()) {
+            Logger::getInstance().log("AQUI SI ENTRO2");
+            sender_conn = sender_it->second.conn;
+        }
+
+        // Si destinatario no existe, enviar error al emisor y salir
+        if (!recipient_conn) {
+            Logger::getInstance().log("AQUI SI ENTRO3");
+            if (sender_conn) {
+                Logger::getInstance().log("AQUI SI ENTRO4");
+                sender_conn->send_text("Error: El usuario '" + recipient + "' no existe o está desconectado.\n");
+            }
+            return;
+        }
+    }
+    Logger::getInstance().log("AQUI SI ENTRO5");
+    // Enviar al destinatario
+    if (recipient_conn) {
+        Logger::getInstance().log("AQUI SI ENTRO6");
+        recipient_conn->send_text("[PRIVADO] " + sender + ": " + msg + "\n");
+    }
+
+    // Confirmación al emisor
+    if (sender_conn) {
+        Logger::getInstance().log("AQUI SI ENTRO7");
+        sender_conn->send_text("[PRIVADO a " + recipient + "] " + sender + ": " + msg + "\n");
+    }
 }

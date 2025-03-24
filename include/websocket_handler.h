@@ -21,4 +21,6 @@ public:
 
     static void update_status(const std::string& username, UserStatus status);
     static std::string list_users();
+
+    static void send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg);
 };

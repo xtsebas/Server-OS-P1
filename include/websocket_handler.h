@@ -27,3 +27,7 @@ public:
 
 // Mapeo del estado de un user creado
 extern std::unordered_map<std::string, UserStatus> user_last_status;
+
+// Historial de mensajes en memoria
+extern std::vector<std::string> general_chat_history;
+extern std::map<std::pair<std::string, std::string>, std::vector<std::string>> private_chat_history;

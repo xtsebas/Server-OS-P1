@@ -12,6 +12,11 @@ std::mutex connections_mutex;
 // Mapa que recuerda el último estado del usuario, incluso si está desconectado
 std::unordered_map<std::string, UserStatus> user_last_status;
 
+// Historial y mapa del chat
+std::vector<std::string> general_chat_history;
+std::map<std::pair<std::string, std::string>, std::vector<std::string>> private_chat_history;
+
+
 // Función auxiliar para generar un UUID
 std::string generate_uuid()
 {
@@ -52,6 +57,30 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
         if (conn_data.conn && conn_data.conn != &conn)
         {
             conn_data.conn->send_text("Usuario conectado: " + username);
+        }
+    }
+    // Enviar historial del chat general
+    for (const auto& line : general_chat_history) {
+        conn.send_text("[HISTORIAL] " + line);
+    }
+
+    // Enviar historial de mensajes privados
+    for (const auto& [key, mensajes] : private_chat_history) {
+        const std::string& userA = key.first;
+        const std::string& userB = key.second;
+
+        if (username != userA && username != userB) continue;
+
+        std::string otro_usuario = (username == userA) ? userB : userA;
+
+        for (const auto& line : mensajes) {
+            size_t sep = line.find(": ");
+            if (sep != std::string::npos) {
+                std::string remitente = line.substr(0, sep);
+                std::string contenido = line.substr(sep + 2);
+
+                conn.send_text("[PRIVADO HISTORIAL] con " + otro_usuario + " - " + remitente + ": " + contenido);
+            }
         }
     }
 }
@@ -104,6 +133,9 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
             return;
         }
     }
+
+    // Guardar en historial de mensajes general
+    general_chat_history.push_back(sender + ": " + data);    
 
     // Broadcast normal
     std::lock_guard<std::mutex> lock(connections_mutex);
@@ -207,7 +239,13 @@ void WebSocketHandler::send_private_message(const std::string& sender, const std
             return;
         }
     }
-    Logger::getInstance().log("AQUI SI ENTRO5");
+
+    // Guardar en historial de privados
+    std::pair<std::string, std::string> key = 
+        (sender < recipient) ? std::make_pair(sender, recipient) : std::make_pair(recipient, sender);
+
+    private_chat_history[key].push_back(sender + ": " + msg);
+
     // Enviar al destinatario
     if (recipient_conn) {
         Logger::getInstance().log("AQUI SI ENTRO6");

@@ -24,3 +24,6 @@ public:
 
     static void send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg);
 };
+
+// Mapeo del estado de un user creado
+extern std::unordered_map<std::string, UserStatus> user_last_status;

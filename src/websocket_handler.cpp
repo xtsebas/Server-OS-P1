@@ -9,6 +9,9 @@
 std::unordered_map<std::string, ConnectionData> connections;
 std::mutex connections_mutex;
 
+// Mapa que recuerda el último estado del usuario, incluso si está desconectado
+std::unordered_map<std::string, UserStatus> user_last_status;
+
 // Función auxiliar para generar un UUID
 std::string generate_uuid()
 {
@@ -29,12 +32,18 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
         conn.close("Nombre duplicado.");
         return;
     }
+    
+    // Obtener estado anterior (si existe), sino ACTIVO
+    UserStatus estado_inicial = UserStatus::ACTIVO;
+    if (user_last_status.count(username) > 0) {
+        estado_inicial = user_last_status[username];
+    }
 
     // Generar UUID para el usuario
     std::string user_uuid = generate_uuid();
 
     // Guardar la conexión
-    connections[username] = {username, user_uuid, &conn, UserStatus::ACTIVO};
+    connections[username] = {username, user_uuid, &conn, estado_inicial};
     Logger::getInstance().log("Nueva conexión: " + username + " (UUID: " + user_uuid + ") desde " + client_ip);
 
     // Notificar a otros usuarios
@@ -117,6 +126,7 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
         if (it->second.conn == &conn)
         {
             disconnected_user = it->first;
+            user_last_status[disconnected_user] = it->second.status;
             connections.erase(it);
             break;
         }

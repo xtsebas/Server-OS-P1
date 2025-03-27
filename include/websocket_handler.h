@@ -24,7 +24,7 @@ public:
     static void update_status(const std::string& username, UserStatus status, bool notify = true);
     static std::string list_users();
     static void start_inactivity_monitor();
-
+    static void start_disconnection_cleanup();
 private:
     static uint8_t read_uint8(const std::string& data, size_t& offset);
     static std::string read_string_8(const std::string& data, size_t& offset);

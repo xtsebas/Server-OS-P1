@@ -9,156 +9,158 @@
 std::unordered_map<std::string, ConnectionData> connections;
 std::mutex connections_mutex;
 
-// Mapa que recuerda el último estado del usuario, incluso si está desconectado
-std::unordered_map<std::string, UserStatus> user_last_status;
-
-// Historial y mapa del chat
-std::vector<std::string> general_chat_history;
-std::map<std::pair<std::string, std::string>, std::vector<std::string>> private_chat_history;
-
-
 // Función auxiliar para generar un UUID
-std::string generate_uuid()
-{
+std::string generate_uuid() {
     std::ostringstream ss;
     static int counter = 0;
     ss << std::hex << std::time(nullptr) << counter++;
     return ss.str();
 }
 
-void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::string &username)
-{
+// -------------- Parsers binarios auxiliares ---------------
+uint8_t WebSocketHandler::read_uint8(const std::string& data, size_t& offset) {
+    if (offset >= data.size()) {
+        throw std::runtime_error("read_uint8 out of range");
+    }
+    uint8_t val = static_cast<uint8_t>(data[offset]);
+    offset += 1;
+    return val;
+}
+
+// Lee un string precedido de un byte (longitud)
+std::string WebSocketHandler::read_string_8(const std::string& data, size_t& offset) {
+    uint8_t length = read_uint8(data, offset); // longitud
+    if (offset + length > data.size()) {
+        throw std::runtime_error("read_string_8 out of range");
+    }
+    std::string s = data.substr(offset, length);
+    offset += length;
+    return s;
+}
+
+// ----------------------------------------------------------
+
+// Manejador op=1 (Listar usuarios)
+void WebSocketHandler::handle_list_users(crow::websocket::connection& conn) {
+    // A discreción, podemos usar la ruta HTTP /users. Pero si el protocolo define binario, enviamos binario.
+    // Por simplicidad, enviamos un texto enumerando usuarios.
+    std::string userList = list_users();
+    conn.send_binary(std::string(1, (char)1) + userList); 
+    // Ejemplo: primer byte es 1 (mismo opcode) o un "código" de respuesta
+}
+
+// Manejador op=3 (Cambiar estado)
+void WebSocketHandler::handle_change_status(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset) {
+    // Protocolo dice: Nombre, Estado
+    // Pero ya tenemos "sender" (no hace falta nombre?)
+    // Sin embargo, si el doc dice que el payload lleva Nombre, parsealo.
+
+    // Ejemplo: parse Nombre (opcional)
+    // std::string name = read_string_8(data, offset);
+
+    // parse estado
+    uint8_t raw_status = read_uint8(data, offset); // 1=ACTIVO,2=OCUPADO,3=INACTIVO
+    UserStatus newStatus = (raw_status == 1) ? UserStatus::ACTIVO :
+                           (raw_status == 2) ? UserStatus::OCUPADO :
+                           UserStatus::INACTIVO;
+
+    update_status(sender, newStatus);
+}
+
+// Manejador op=4 (Enviar mensaje)
+void WebSocketHandler::handle_send_message(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset) {
+    // En el protocolo: Enviar mensaje => [Dest, Msg]
+    std::string destino = read_string_8(data, offset);
+    std::string mensaje = read_string_8(data, offset);
+
+    if (destino == "~") {
+        // broadcast
+        send_broadcast(sender, mensaje);
+    } else {
+        // privado
+        send_private_message(sender, destino, mensaje);
+    }
+}
+
+// ----------------------------------------------------------
+
+void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::string &username) {
     std::lock_guard<std::mutex> lock(connections_mutex);
     std::string client_ip = conn.get_remote_ip();
 
-    if (connections.find(username) != connections.end())
-    {
+    if (connections.find(username) != connections.end()) {
         conn.send_text("Error: El nombre de usuario ya está en uso.");
         conn.close("Nombre duplicado.");
         return;
     }
-    
-    // Obtener estado anterior (si existe), sino ACTIVO
-    UserStatus estado_inicial = UserStatus::ACTIVO;
-    if (user_last_status.count(username) > 0) {
-        estado_inicial = user_last_status[username];
-    }
 
-    // Generar UUID para el usuario
+    // Generar UUID
     std::string user_uuid = generate_uuid();
+    connections[username] = {username, user_uuid, &conn, UserStatus::ACTIVO};
 
-    // Guardar la conexión
-    connections[username] = {username, user_uuid, &conn, estado_inicial};
     Logger::getInstance().log("Nueva conexión: " + username + " (UUID: " + user_uuid + ") desde " + client_ip);
 
-    // Notificar a otros usuarios
-    for (auto &[_, conn_data] : connections)
-    {
-        if (conn_data.conn && conn_data.conn != &conn)
-        {
+    // Notificar a otros
+    for (auto &[_, conn_data] : connections) {
+        if (conn_data.conn && conn_data.conn != &conn) {
             conn_data.conn->send_text("Usuario conectado: " + username);
-        }
-    }
-    // Enviar historial del chat general
-    for (const auto& line : general_chat_history) {
-        conn.send_text("[HISTORIAL] " + line);
-    }
-
-    // Enviar historial de mensajes privados
-    for (const auto& [key, mensajes] : private_chat_history) {
-        const std::string& userA = key.first;
-        const std::string& userB = key.second;
-
-        if (username != userA && username != userB) continue;
-
-        std::string otro_usuario = (username == userA) ? userB : userA;
-
-        for (const auto& line : mensajes) {
-            size_t sep = line.find(": ");
-            if (sep != std::string::npos) {
-                std::string remitente = line.substr(0, sep);
-                std::string contenido = line.substr(sep + 2);
-
-                conn.send_text("[PRIVADO HISTORIAL] con " + otro_usuario + " - " + remitente + ": " + contenido);
-            }
         }
     }
 }
 
-void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::string &data, bool is_binary)
-{
-    std::string sender = "Desconocido";
+// -------------- on_message con protocolo binario -----------
+void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::string &data, bool is_binary) {
+    // Si no es binario, ignorar o cerrar
+    if (!is_binary) {
+        Logger::getInstance().log("Mensaje de texto recibido. El protocolo exige binario, se ignora.");
+        return;
+    }
 
-    // Buscamos al usuario sin mutex aquí
+    // Encontrar "sender"
+    std::string sender = "Desconocido";
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
-        for (auto &[username, conn_data] : connections)
-        {
-            if (conn_data.conn == &conn)
-            {
-                sender = username;
+        for (auto &[uname, conn_data] : connections) {
+            if (conn_data.conn == &conn) {
+                sender = uname;
                 break;
             }
         }
     }
 
-    Logger::getInstance().log("Mensaje recibido de " + sender + ": " + data);
+    try {
+        size_t offset = 0;
+        // Primer byte => opcode
+        uint8_t opcode = read_uint8(data, offset);
+        Logger::getInstance().log("Binario op=" + std::to_string(opcode) + " from " + sender);
 
-    auto json = crow::json::load(data);
-    if (json) {
-        if (json.has("type") && json["type"].s() == "status_update") {
-            std::string new_status = json["status"].s();
-            if (new_status == "ACTIVO")
-                update_status(sender, UserStatus::ACTIVO);
-            else if (new_status == "OCUPADO")
-                update_status(sender, UserStatus::OCUPADO);
-            else if (new_status == "INACTIVO")
-                update_status(sender, UserStatus::INACTIVO);
-            return;
+        switch(opcode) {
+            case 1: // Listar usuarios
+                handle_list_users(conn);
+                break;
+            case 3: // Cambiar estado
+                handle_change_status(conn, sender, data, offset);
+                break;
+            case 4: // Enviar mensaje
+                handle_send_message(conn, sender, data, offset);
+                break;
+            default:
+                Logger::getInstance().log("Opcode desconocido: " + std::to_string(opcode));
+                break;
         }
-
-        if (json.has("type") && json["type"].s() == "private") {
-            if (!json.has("to") || !json.has("message")) {
-                Logger::getInstance().log("ERROR: mensaje privado malformado.");
-                return;
-            }
-
-            std::string recipient = json["to"].s();
-            std::string msg = json["message"].s();
-
-            Logger::getInstance().log("DEBUG: Se detectó mensaje privado de " + sender +
-                " hacia " + recipient + " contenido: " + msg);
-
-            send_private_message(sender, recipient, msg);
-            return;
-        }
-    }
-
-    // Guardar en historial de mensajes general
-    general_chat_history.push_back(sender + ": " + data);    
-
-    // Broadcast normal
-    std::lock_guard<std::mutex> lock(connections_mutex);
-    for (auto &[_, conn_data] : connections)
-    {
-        if (conn_data.conn)
-        {
-            conn_data.conn->send_text(sender + ": " + data + "\n");
-        }
+    } catch (std::exception& e) {
+        Logger::getInstance().log("Error parseando binario: " + std::string(e.what()));
     }
 }
+// -----------------------------------------------------------
 
-void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::string &reason, uint16_t code)
-{
+void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::string &reason, uint16_t code) {
     std::lock_guard<std::mutex> lock(connections_mutex);
 
     std::string disconnected_user;
-    for (auto it = connections.begin(); it != connections.end(); ++it)
-    {
-        if (it->second.conn == &conn)
-        {
+    for (auto it = connections.begin(); it != connections.end(); ++it) {
+        if (it->second.conn == &conn) {
             disconnected_user = it->first;
-            user_last_status[disconnected_user] = it->second.status;
             connections.erase(it);
             break;
         }
@@ -167,94 +169,75 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
     Logger::getInstance().log("Conexión cerrada: " + disconnected_user + " - " + reason + " (Código " + std::to_string(code) + ")");
 }
 
-void WebSocketHandler::update_status(const std::string &username, UserStatus status)
-{
+void WebSocketHandler::update_status(const std::string &username, UserStatus status) {
+    std::lock_guard<std::mutex> lock(connections_mutex);
     auto it = connections.find(username);
-    if (it != connections.end())
-    {
+    if (it != connections.end()) {
         it->second.status = status;
 
-        std::string status_str = (status == UserStatus::ACTIVO) ? "ACTIVO" : (status == UserStatus::OCUPADO) ? "OCUPADO"
-                                                                                                             : "INACTIVO";
+        std::string status_str = (status == UserStatus::ACTIVO) ? "ACTIVO" :
+                                 (status == UserStatus::OCUPADO) ? "OCUPADO" :
+                                 "INACTIVO";
 
         std::string message = username + " cambió su estado a " + status_str;
         Logger::getInstance().log(message);
 
-        for (auto &[_, conn_data] : connections)
-        {
-            if (conn_data.conn)
-            {
+        // Notificar a todos
+        for (auto &[_, conn_data] : connections) {
+            if (conn_data.conn) {
                 conn_data.conn->send_text(message);
             }
         }
     }
 }
 
-std::string WebSocketHandler::list_users()
-{
+std::string WebSocketHandler::list_users() {
     std::ostringstream oss;
-    std::lock_guard<std::mutex> lock(connections_mutex);
-    oss << "Usuarios conectados:\n";
-    for (const auto &[username, conn_data] : connections)
     {
-        std::string status_str = (conn_data.status == UserStatus::ACTIVO) ? "ACTIVO" : (conn_data.status == UserStatus::OCUPADO) ? "OCUPADO"
-                                                                                                                                 : "INACTIVO";
-        oss << "- " << username << " (" << status_str << ")\n";
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        oss << "Usuarios conectados:\n";
+        for (const auto &[username, conn_data] : connections) {
+            std::string status_str = (conn_data.status == UserStatus::ACTIVO) ? "ACTIVO" :
+                                     (conn_data.status == UserStatus::OCUPADO) ? "OCUPADO" : "INACTIVO";
+            oss << "- " << username << " (" << status_str << ")\n";
+        }
     }
     return oss.str();
 }
 
+// Enviar mensaje privado (ya existía)
 void WebSocketHandler::send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg)
 {
-    Logger::getInstance().log("DEBUG: send_private_message FROM=" + sender +
-                          " TO=" + recipient + " MSG=" + msg);
+    std::lock_guard<std::mutex> lock(connections_mutex);
 
-    crow::websocket::connection* recipient_conn = nullptr;
-    crow::websocket::connection* sender_conn = nullptr;
-
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex);
-
-        // Buscar destinatario
-        auto it = connections.find(recipient);
-        if (it != connections.end()) {
-            Logger::getInstance().log("AQUI SI ENTRO1");
-            recipient_conn = it->second.conn;
+    auto it = connections.find(recipient);
+    if (it == connections.end()) {
+        // Avisar error al emisor
+        auto se = connections.find(sender);
+        if (se != connections.end() && se->second.conn) {
+            se->second.conn->send_text("Error: '" + recipient + "' no conectado.\n");
         }
-
-        // Buscar emisor
-        auto sender_it = connections.find(sender);
-        if (sender_it != connections.end()) {
-            Logger::getInstance().log("AQUI SI ENTRO2");
-            sender_conn = sender_it->second.conn;
-        }
-
-        // Si destinatario no existe, enviar error al emisor y salir
-        if (!recipient_conn) {
-            Logger::getInstance().log("AQUI SI ENTRO3");
-            if (sender_conn) {
-                Logger::getInstance().log("AQUI SI ENTRO4");
-                sender_conn->send_text("Error: El usuario '" + recipient + "' no existe o está desconectado.\n");
-            }
-            return;
-        }
+        return;
+    }
+    // El destinatario existe
+    auto& recip_conn = it->second.conn;
+    if (recip_conn) {
+        recip_conn->send_text("[PRIVADO] " + sender + ": " + msg + "\n");
     }
 
-    // Guardar en historial de privados
-    std::pair<std::string, std::string> key = 
-        (sender < recipient) ? std::make_pair(sender, recipient) : std::make_pair(recipient, sender);
-
-    private_chat_history[key].push_back(sender + ": " + msg);
-
-    // Enviar al destinatario
-    if (recipient_conn) {
-        Logger::getInstance().log("AQUI SI ENTRO6");
-        recipient_conn->send_text("[PRIVADO] " + sender + ": " + msg + "\n");
+    // Retro al emisor
+    auto se2 = connections.find(sender);
+    if (se2 != connections.end() && se2->second.conn) {
+        se2->second.conn->send_text("[PRIVADO a " + recipient + "] " + sender + ": " + msg + "\n");
     }
+}
 
-    // Confirmación al emisor
-    if (sender_conn) {
-        Logger::getInstance().log("AQUI SI ENTRO7");
-        sender_conn->send_text("[PRIVADO a " + recipient + "] " + sender + ": " + msg + "\n");
+// Broadcast (opcional, si Destino=="~")
+void WebSocketHandler::send_broadcast(const std::string& sender, const std::string& msg) {
+    std::lock_guard<std::mutex> lock(connections_mutex);
+    for (auto& [uname, conn_data] : connections) {
+        if (conn_data.conn) {
+            conn_data.conn->send_text(sender + ": " + msg + "\n");
+        }
     }
 }

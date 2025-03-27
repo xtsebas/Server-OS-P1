@@ -5,11 +5,10 @@
 #include <ctime>
 #include <mutex>
 
-// Mapa de conexiones activas
 std::unordered_map<std::string, ConnectionData> connections;
 std::mutex connections_mutex;
+static std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> chat_history;
 
-// Función auxiliar para generar un UUID
 std::string generate_uuid() {
     std::ostringstream ss;
     static int counter = 0;
@@ -17,7 +16,22 @@ std::string generate_uuid() {
     return ss.str();
 }
 
-// -------------- Parsers binarios auxiliares ---------------
+static void send_error(crow::websocket::connection& conn, uint8_t error_code) {
+    std::string payload;
+    payload.push_back((char)0x50);
+    payload.push_back((char)error_code);
+    conn.send_binary(payload);
+}
+
+static uint8_t userStatusToByte(UserStatus st) {
+    switch (st) {
+        case UserStatus::ACTIVO:   return 1;
+        case UserStatus::OCUPADO:  return 2;
+        case UserStatus::INACTIVO: return 3;
+    }
+    return 0;
+}
+
 uint8_t WebSocketHandler::read_uint8(const std::string& data, size_t& offset) {
     if (offset >= data.size()) {
         throw std::runtime_error("read_uint8 out of range");
@@ -27,9 +41,8 @@ uint8_t WebSocketHandler::read_uint8(const std::string& data, size_t& offset) {
     return val;
 }
 
-// Lee un string precedido de un byte (longitud)
 std::string WebSocketHandler::read_string_8(const std::string& data, size_t& offset) {
-    uint8_t length = read_uint8(data, offset); // longitud
+    uint8_t length = read_uint8(data, offset);
     if (offset + length > data.size()) {
         throw std::runtime_error("read_string_8 out of range");
     }
@@ -38,111 +51,189 @@ std::string WebSocketHandler::read_string_8(const std::string& data, size_t& off
     return s;
 }
 
-// ----------------------------------------------------------
-
-// Manejador op=1 (Listar usuarios)
-void WebSocketHandler::handle_list_users(crow::websocket::connection& conn) {
-    // A discreción, podemos usar la ruta HTTP /users. Pero si el protocolo define binario, enviamos binario.
-    // Por simplicidad, enviamos un texto enumerando usuarios.
-    std::string userList = list_users();
-    conn.send_binary(std::string(1, (char)1) + userList); 
-    // Ejemplo: primer byte es 1 (mismo opcode) o un "código" de respuesta
+void WebSocketHandler::notify_user_joined(const std::string& username, UserStatus st) {
+    std::lock_guard<std::mutex> lock(connections_mutex);
+    std::string payload;
+    payload.push_back((char)0x53);
+    payload.push_back((char)username.size());
+    payload += username;
+    payload.push_back((char)userStatusToByte(st));
+    for (auto& [_, conn_data] : connections) {
+        if (conn_data.conn) {
+            conn_data.conn->send_binary(payload);
+        }
+    }
 }
 
-// Manejador op=3 (Cambiar estado)
+void WebSocketHandler::notify_user_status_change(const std::string& username, UserStatus st) {
+    std::lock_guard<std::mutex> lock(connections_mutex);
+    std::string payload;
+    payload.push_back((char)0x54);
+    payload.push_back((char)username.size());
+    payload += username;
+    payload.push_back((char)userStatusToByte(st));
+    for (auto& [_, conn_data] : connections) {
+        if (conn_data.conn) {
+            conn_data.conn->send_binary(payload);
+        }
+    }
+}
+
+void WebSocketHandler::notify_new_message(const std::string& sender, const std::string& msg, bool is_private, const std::string& recipient) {
+    std::string payload;
+    payload.push_back((char)0x55);
+    payload.push_back((char)sender.size());
+    payload += sender;
+    payload.push_back((char)msg.size());
+    payload += msg;
+    if (is_private) {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto itA = connections.find(sender);
+        auto itB = connections.find(recipient);
+        if (itA != connections.end() && itA->second.conn) {
+            itA->second.conn->send_binary(payload);
+        }
+        if (itB != connections.end() && itB->second.conn) {
+            itB->second.conn->send_binary(payload);
+        }
+    } else {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        for (auto& [uname, cd] : connections) {
+            if (cd.conn) {
+                cd.conn->send_binary(payload);
+            }
+        }
+    }
+}
+
+void WebSocketHandler::handle_list_users(crow::websocket::connection& conn) {
+    std::string list = list_users();
+    conn.send_binary(std::string(1, (char)1) + list);
+}
+
+void WebSocketHandler::handle_get_user_info(crow::websocket::connection& conn, const std::string& data, size_t& offset) {
+    std::string requested_name = read_string_8(data, offset);
+    std::lock_guard<std::mutex> lock(connections_mutex);
+    auto it = connections.find(requested_name);
+    if (it == connections.end()) {
+        send_error(conn, 1);
+        return;
+    }
+    UserStatus st = it->second.status;
+    std::string payload;
+    payload.push_back((char)0x52);
+    payload.push_back((char)requested_name.size());
+    payload += requested_name;
+    payload.push_back((char)userStatusToByte(st));
+    conn.send_binary(payload);
+}
+
 void WebSocketHandler::handle_change_status(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset) {
-    // Protocolo dice: Nombre, Estado
-    // Pero ya tenemos "sender" (no hace falta nombre?)
-    // Sin embargo, si el doc dice que el payload lleva Nombre, parsealo.
-
-    // Ejemplo: parse Nombre (opcional)
-    // std::string name = read_string_8(data, offset);
-
-    // parse estado
-    uint8_t raw_status = read_uint8(data, offset); // 1=ACTIVO,2=OCUPADO,3=INACTIVO
-    UserStatus newStatus = (raw_status == 1) ? UserStatus::ACTIVO :
-                           (raw_status == 2) ? UserStatus::OCUPADO :
-                           UserStatus::INACTIVO;
-
+    uint8_t raw_status = read_uint8(data, offset);
+    UserStatus newStatus;
+    switch(raw_status) {
+        case 1: newStatus = UserStatus::ACTIVO; break;
+        case 2: newStatus = UserStatus::OCUPADO; break;
+        case 3: newStatus = UserStatus::INACTIVO; break;
+        default:
+            send_error(conn, 2);
+            return;
+    }
     update_status(sender, newStatus);
 }
 
-// Manejador op=4 (Enviar mensaje)
 void WebSocketHandler::handle_send_message(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset) {
-    // En el protocolo: Enviar mensaje => [Dest, Msg]
     std::string destino = read_string_8(data, offset);
     std::string mensaje = read_string_8(data, offset);
-
+    if (mensaje.empty()) {
+        send_error(conn, 3);
+        return;
+    }
     if (destino == "~") {
-        // broadcast
         send_broadcast(sender, mensaje);
     } else {
-        // privado
         send_private_message(sender, destino, mensaje);
     }
 }
 
-// ----------------------------------------------------------
+void WebSocketHandler::handle_get_history(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset) {
+    std::string target = read_string_8(data, offset);
+    std::string chat_id = (target == "~") 
+        ? "~" 
+        : ((sender < target) ? (sender + "|" + target) : (target + "|" + sender));
+
+    auto it = chat_history.find(chat_id);
+    if (it == chat_history.end()) {
+        std::string empty;
+        empty.push_back((char)0x56);
+        empty.push_back((char)0);
+        conn.send_binary(empty);
+        return;
+    }
+    const auto& messages = it->second;
+    uint8_t num_msgs = (messages.size() > 255) ? 255 : static_cast<uint8_t>(messages.size());
+    std::string payload;
+    payload.push_back((char)0x56);
+    payload.push_back((char)num_msgs);
+    for (size_t i = 0; i < num_msgs; i++) {
+        const auto& [author, text] = messages[i];
+        payload.push_back((char)author.size());
+        payload += author;
+        payload.push_back((char)text.size());
+        payload += text;
+    }
+    conn.send_binary(payload);
+}
 
 void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::string &username) {
     std::lock_guard<std::mutex> lock(connections_mutex);
     std::string client_ip = conn.get_remote_ip();
-
     if (connections.find(username) != connections.end()) {
         conn.send_text("Error: El nombre de usuario ya está en uso.");
         conn.close("Nombre duplicado.");
         return;
     }
-
-    // Generar UUID
     std::string user_uuid = generate_uuid();
     connections[username] = {username, user_uuid, &conn, UserStatus::ACTIVO};
-
     Logger::getInstance().log("Nueva conexión: " + username + " (UUID: " + user_uuid + ") desde " + client_ip);
-
-    // Notificar a otros
-    for (auto &[_, conn_data] : connections) {
-        if (conn_data.conn && conn_data.conn != &conn) {
-            conn_data.conn->send_text("Usuario conectado: " + username);
-        }
-    }
+    notify_user_joined(username, UserStatus::ACTIVO);
 }
 
-// -------------- on_message con protocolo binario -----------
 void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::string &data, bool is_binary) {
-    // Si no es binario, ignorar o cerrar
     if (!is_binary) {
         Logger::getInstance().log("Mensaje de texto recibido. El protocolo exige binario, se ignora.");
         return;
     }
-
-    // Encontrar "sender"
     std::string sender = "Desconocido";
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
         for (auto &[uname, conn_data] : connections) {
             if (conn_data.conn == &conn) {
                 sender = uname;
+                conn_data.last_active = std::chrono::steady_clock::now();
                 break;
             }
         }
     }
-
     try {
         size_t offset = 0;
-        // Primer byte => opcode
         uint8_t opcode = read_uint8(data, offset);
         Logger::getInstance().log("Binario op=" + std::to_string(opcode) + " from " + sender);
-
         switch(opcode) {
-            case 1: // Listar usuarios
+            case 1:
                 handle_list_users(conn);
                 break;
-            case 3: // Cambiar estado
+            case 2:
+                handle_get_user_info(conn, data, offset);
+                break;
+            case 3:
                 handle_change_status(conn, sender, data, offset);
                 break;
-            case 4: // Enviar mensaje
+            case 4:
                 handle_send_message(conn, sender, data, offset);
+                break;
+            case 5:
+                handle_get_history(conn, sender, data, offset);
                 break;
             default:
                 Logger::getInstance().log("Opcode desconocido: " + std::to_string(opcode));
@@ -152,11 +243,9 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
         Logger::getInstance().log("Error parseando binario: " + std::string(e.what()));
     }
 }
-// -----------------------------------------------------------
 
 void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::string &reason, uint16_t code) {
     std::lock_guard<std::mutex> lock(connections_mutex);
-
     std::string disconnected_user;
     for (auto it = connections.begin(); it != connections.end(); ++it) {
         if (it->second.conn == &conn) {
@@ -165,31 +254,22 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
             break;
         }
     }
-
     Logger::getInstance().log("Conexión cerrada: " + disconnected_user + " - " + reason + " (Código " + std::to_string(code) + ")");
 }
 
-void WebSocketHandler::update_status(const std::string &username, UserStatus status) {
+void WebSocketHandler::update_status(const std::string &username, UserStatus status, bool notify) {
     std::lock_guard<std::mutex> lock(connections_mutex);
     auto it = connections.find(username);
     if (it != connections.end()) {
         it->second.status = status;
-
-        std::string status_str = (status == UserStatus::ACTIVO) ? "ACTIVO" :
-                                 (status == UserStatus::OCUPADO) ? "OCUPADO" :
-                                 "INACTIVO";
-
-        std::string message = username + " cambió su estado a " + status_str;
-        Logger::getInstance().log(message);
-
-        // Notificar a todos
-        for (auto &[_, conn_data] : connections) {
-            if (conn_data.conn) {
-                conn_data.conn->send_text(message);
-            }
+        it->second.last_active = std::chrono::steady_clock::now();
+        Logger::getInstance().log(username + " cambió su estado");
+        if (notify) {
+            notify_user_status_change(username, status);
         }
     }
 }
+
 
 std::string WebSocketHandler::list_users() {
     std::ostringstream oss;
@@ -197,47 +277,50 @@ std::string WebSocketHandler::list_users() {
         std::lock_guard<std::mutex> lock(connections_mutex);
         oss << "Usuarios conectados:\n";
         for (const auto &[username, conn_data] : connections) {
-            std::string status_str = (conn_data.status == UserStatus::ACTIVO) ? "ACTIVO" :
-                                     (conn_data.status == UserStatus::OCUPADO) ? "OCUPADO" : "INACTIVO";
-            oss << "- " << username << " (" << status_str << ")\n";
+            uint8_t st = userStatusToByte(conn_data.status);
+            oss << "- " << username << " (status=" << (int)st << ")\n";
         }
     }
     return oss.str();
 }
 
-// Enviar mensaje privado (ya existía)
-void WebSocketHandler::send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg)
-{
+void WebSocketHandler::send_private_message(const std::string& sender, const std::string& recipient, const std::string& msg) {
     std::lock_guard<std::mutex> lock(connections_mutex);
-
     auto it = connections.find(recipient);
     if (it == connections.end()) {
-        // Avisar error al emisor
         auto se = connections.find(sender);
         if (se != connections.end() && se->second.conn) {
             se->second.conn->send_text("Error: '" + recipient + "' no conectado.\n");
         }
         return;
     }
-    // El destinatario existe
-    auto& recip_conn = it->second.conn;
-    if (recip_conn) {
-        recip_conn->send_text("[PRIVADO] " + sender + ": " + msg + "\n");
-    }
-
-    // Retro al emisor
-    auto se2 = connections.find(sender);
-    if (se2 != connections.end() && se2->second.conn) {
-        se2->second.conn->send_text("[PRIVADO a " + recipient + "] " + sender + ": " + msg + "\n");
-    }
+    std::string chat_id = (sender < recipient) ? (sender + "|" + recipient) : (recipient + "|" + sender);
+    chat_history[chat_id].push_back({sender, msg});
+    notify_new_message(sender, msg, true, recipient);
 }
 
-// Broadcast (opcional, si Destino=="~")
 void WebSocketHandler::send_broadcast(const std::string& sender, const std::string& msg) {
     std::lock_guard<std::mutex> lock(connections_mutex);
-    for (auto& [uname, conn_data] : connections) {
-        if (conn_data.conn) {
-            conn_data.conn->send_text(sender + ": " + msg + "\n");
-        }
-    }
+    chat_history["~"].push_back({sender, msg});
+    notify_new_message(sender, msg, false, "");
 }
+
+void WebSocketHandler::start_inactivity_monitor() {
+    std::thread([] {
+        while (true) {
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::lock_guard<std::mutex> lock(connections_mutex);
+            auto now = std::chrono::steady_clock::now();
+            for (auto& [username, conn_data] : connections) {
+                if (conn_data.status != UserStatus::INACTIVO) {
+                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
+                    if (elapsed >= 60) {
+                        conn_data.status = UserStatus::INACTIVO;
+                        notify_user_status_change(username, UserStatus::INACTIVO);
+                    }
+                }
+            }
+        }
+    }).detach();
+}
+

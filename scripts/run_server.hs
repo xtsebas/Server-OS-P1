@@ -1,2 +1,13 @@
+import System.Process (callCommand)
+import System.Directory (setCurrentDirectory)
+
 main :: IO ()
-main = putStrLn "¡Hola, Mundo!"
+main = do
+    putStrLn "Cambiando a carpeta build/..."
+    setCurrentDirectory "build"
+
+    putStrLn "Compilando con make..."
+    callCommand "make"
+
+    putStrLn "Ejecutando CrowSample..."
+    callCommand "./CrowSample"

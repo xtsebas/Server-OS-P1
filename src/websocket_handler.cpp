@@ -5,6 +5,7 @@
 #include <iostream>
 #include <ctime>
 #include <mutex>
+#include <condition_variable>
 
 bool testing_mode = false;
 std::unordered_map<std::string, ConnectionData> connections;
@@ -12,6 +13,10 @@ std::mutex connections_mutex;
 std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> chat_history;
 std::unordered_map<std::string, UserStatus> last_user_status;
 std::vector<std::pair<std::string, std::string>> general_chat_history;
+std::condition_variable inactivity_cv;
+std::mutex inactivity_mutex;
+bool user_marked_inactive = false;
+
 
 std::string generate_uuid()
 {
@@ -329,6 +334,13 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
         }
     }
 
+    static bool monitor_started = false;
+    if (!monitor_started)
+    {
+        WebSocketHandler::start_inactivity_monitor();
+        monitor_started = true;
+    }
+
     notify_user_joined(username, status_to_notify);
 }
 
@@ -349,6 +361,7 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
             {
                 sender = uname;
                 conn_data.last_active = std::chrono::steady_clock::now();
+                Logger::getInstance().log("Actualizando tiempo de actividad para " + sender);
                 break;
             }
         }
@@ -511,13 +524,24 @@ void WebSocketHandler::start_inactivity_monitor()
             for (auto& [username, conn_data] : connections) {
                 if (conn_data.status != UserStatus::INACTIVO) {
                     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
+
                     if (elapsed >= 60) {
                         conn_data.status = UserStatus::INACTIVO;
 
                         Logger::getInstance().log("Usuario " + username + " marcado como INACTIVO (inactivo por " + std::to_string(elapsed) + "s)");
-
+                        {
+                            std::lock_guard<std::mutex> lock(inactivity_mutex);
+                            user_marked_inactive = true;
+                        }
                         notify_user_status_change(username, UserStatus::INACTIVO);
+                        inactivity_cv.notify_all();
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                        {
+                            std::lock_guard<std::mutex> lock(inactivity_mutex);
+                            user_marked_inactive = false;
+                        }
                     }
+
                 }
             }
         }

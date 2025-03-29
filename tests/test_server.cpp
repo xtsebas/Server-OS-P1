@@ -448,6 +448,73 @@ void test_handle_get_history_messages()
     std::cout << "test_handle_get_history_messages\n";
 }
 
+void test_inactivity()
+{
+    std::cout << "test_inactivity\n";
+
+    // Reiniciar la variable antes de cada prueba
+    {
+        std::lock_guard<std::mutex> lock(inactivity_mutex);
+        user_marked_inactive = false;
+    }
+
+    connections.clear();
+    last_user_status.clear();
+
+    // Simular conexión de Alice
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+
+    // Esperar 2 segundos para simular actividad
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    // Simular actividad
+    std::string msg_general;
+    msg_general.push_back((char)0x04);
+    msg_general.push_back((char)1);
+    msg_general += "~";
+    msg_general.push_back((char)5);
+    msg_general += "hello";
+    WebSocketHandler::on_message(conn_alice, msg_general, true);
+
+    std::cout << "Esperando que Alice sea marcada como INACTIVO...\n";
+
+    // Esperar señal de inactividad con un tiempo máximo de espera
+    {
+        std::unique_lock<std::mutex> lock(inactivity_mutex);
+    
+        // Esperar hasta 70 segundos, verificando cada 5 segundos
+        for (int i = 0; i < 14; ++i)
+        {
+            if (inactivity_cv.wait_for(lock, std::chrono::seconds(5), [] { return user_marked_inactive; }))
+            {
+                break;
+            }
+            std::cout << "Reintentando esperar señal de inactividad...\n";
+        }
+    
+        // Verificar si Alice fue marcada como INACTIVO
+        if (!user_marked_inactive)
+        {
+            std::cerr << "Error: La espera por inactividad de Alice expiró sin ser marcada como INACTIVO.\n";
+            exit(1);
+        }
+    }
+
+    // Verificar que Alice haya sido marcada como INACTIVO
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - connections["alice"].last_active)
+                           .count();
+        std::cout << "Tiempo transcurrido para Alice: " << elapsed << " segundos\n";
+        std::cout << "Estado actual de Alice: " << (connections["alice"].status == UserStatus::INACTIVO ? "INACTIVO" : "ACTIVO") << "\n";
+        assert(connections["alice"].status == UserStatus::INACTIVO && "Usuario no fue marcado como INACTIVO tras inactividad");
+    }
+
+    std::cout << "test_inactivity \n";
+}
+
 extern bool testing_mode;
 int main()
 {
@@ -465,6 +532,7 @@ int main()
         test_handle_get_history();
         test_keep_status();
         test_handle_get_history_messages();
+        //test_inactivity();
 
         std::cout << "\nTodos los tests de test_server pasaron con éxito.\n";
         return 0;

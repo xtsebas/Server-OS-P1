@@ -14,6 +14,7 @@ struct ConnectionData {
     crow::websocket::connection* conn;
     UserStatus status;
     std::chrono::steady_clock::time_point last_active;
+    std::string ip_address;
 };
 
 class WebSocketHandler {

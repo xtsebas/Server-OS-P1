@@ -181,12 +181,15 @@ void WebSocketHandler::handle_get_user_info(crow::websocket::connection &conn, c
         return;
     }
     UserStatus st = it->second.status;
+    std::string ip_address = it->second.ip_address;
     std::string payload;
     payload.push_back((char)0x52);
     payload.push_back((char)requested_name.size());
     payload += requested_name;
     payload.push_back((char)userStatusToByte(st));
-    Logger::getInstance().log("Enviando 0x52 info de usuario: " + requested_name + " (estado = " + std::to_string(userStatusToByte(st)) + ")");
+    payload.push_back((char)ip_address.size());
+    payload += ip_address; 
+    Logger::getInstance().log("Enviando 0x52 info de usuario: " + requested_name + " (estado = " + std::to_string(userStatusToByte(st)) + ", IP = " + ip_address + ")");    
     conn.send_binary(payload);
 }
 
@@ -304,6 +307,7 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
             {
                 it->second.conn = &conn;
                 it->second.last_active = std::chrono::steady_clock::now();
+                it->second.ip_address = client_ip;
                 is_reconnection = true;
                 status_to_notify = it->second.status;
             }

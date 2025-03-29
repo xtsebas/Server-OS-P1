@@ -155,7 +155,8 @@ void test_handle_get_user_info()
         "uuid-alice",
         nullptr,
         UserStatus::ACTIVO,
-        std::chrono::steady_clock::now()
+        std::chrono::steady_clock::now(),
+        "192.168.1.10"
     };
 
     MockConnection conn_bob("127.0.0.1");
@@ -164,7 +165,8 @@ void test_handle_get_user_info()
         "uuid-bob",
         &conn_bob,
         UserStatus::ACTIVO,
-        std::chrono::steady_clock::now()
+        std::chrono::steady_clock::now(),
+        "127.0.0.1" 
     };
 
     std::string data;
@@ -193,9 +195,11 @@ void test_handle_get_user_info()
     size_t offset = 1;
     std::string name = get_string_8(payload, offset);
     uint8_t st = (uint8_t)payload[offset++];
+    std::string ip_address = get_string_8(payload, offset);
 
     assert(name == "alice" && "get_user_info: nombre no coincide");
     assert(st == 1 && "get_user_info: status no es ACTIVO");
+    assert(ip_address == "192.168.1.10" && "get_user_info: IP no coincide");
 
     std::cout << "test_handle_get_user_info\n";
 }

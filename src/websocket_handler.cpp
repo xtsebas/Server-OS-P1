@@ -10,7 +10,7 @@ bool testing_mode = false;
 std::unordered_map<std::string, ConnectionData> connections;
 std::mutex connections_mutex;
 std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> chat_history;
-
+std::unordered_map<std::string, UserStatus> last_user_status;
 
 std::string generate_uuid()
 {
@@ -297,7 +297,11 @@ void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::str
         else
         {
             user_uuid = generate_uuid();
-            connections[username] = {username, user_uuid, &conn, UserStatus::ACTIVO, std::chrono::steady_clock::now()};
+            if (last_user_status.find(username) != last_user_status.end())
+            {
+                status_to_notify = last_user_status[username];
+            }
+            connections[username] = {username, user_uuid, &conn, status_to_notify, std::chrono::steady_clock::now()};
         }
     }
 
@@ -382,6 +386,7 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
     {
         if (conn_data.conn == &conn)
         {
+            last_user_status[username] = conn_data.status;
             conn_data.conn = nullptr; 
             disconnected_user = username;
             Logger::getInstance().log("Usuario desconectado (temporal): " + username + " - " + reason + " (Código " + std::to_string(code) + ")");

@@ -354,7 +354,36 @@ void test_handle_get_history()
     std::cout << "test_handle_get_history\n";
 }
 
+void test_keep_status()
+{
+    std::cout << "test_keep_status\n";
 
+    connections.clear();
+    last_user_status.clear();
+
+    // Simular primera conexión de Alice
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+    assert(connections["alice"].status == UserStatus::ACTIVO && "Estado incorrecto al conectar por primera vez");
+
+    // Cambiar estado de Alice a OCUPADO
+    std::string data;
+    data.push_back((char)0x03); 
+    data.push_back((char)2);   
+    WebSocketHandler::on_message(conn_alice, data, true);
+    assert(connections["alice"].status == UserStatus::OCUPADO && "Cambio de estado fallido");
+
+    // Simular desconexión de Alice
+    WebSocketHandler::on_close(conn_alice, "Cerrando", 1000);
+    assert(last_user_status["alice"] == UserStatus::OCUPADO && "Estado no guardado al desconectar");
+
+    // Simular reconexión de Alice
+    MockConnection conn_alice_re("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice_re, "alice");
+    assert(connections["alice"].status == UserStatus::OCUPADO && "Estado no restaurado correctamente al reconectar");
+
+    std::cout << "test_keep_status\n";
+}
 
 
 extern bool testing_mode;
@@ -372,6 +401,7 @@ int main()
         test_handle_change_status();
         test_handle_send_message();
         test_handle_get_history();
+        test_keep_status();
 
         std::cout << "\nTodos los tests de test_server pasaron con éxito.\n";
         return 0;

@@ -38,3 +38,14 @@ target_include_directories(CrowSample PUBLIC
 
 # Enlazar librerías necesarias (pthread si Crow lo requiere)
 target_link_libraries(CrowSample pthread)
+
+add_executable(TestServer
+  tests/test_server.cpp
+  src/logger.cpp
+  src/websocket_handler.cpp
+)
+
+target_include_directories(TestServer PRIVATE
+  ${CMAKE_SOURCE_DIR}/include
+)
+target_link_libraries(TestServer pthread)

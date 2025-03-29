@@ -25,14 +25,13 @@ public:
     static std::string list_users();
     static void start_inactivity_monitor();
     static void start_disconnection_cleanup();
-private:
-    static uint8_t read_uint8(const std::string& data, size_t& offset);
-    static std::string read_string_8(const std::string& data, size_t& offset);
     static void handle_list_users(crow::websocket::connection& conn);
     static void handle_get_user_info(crow::websocket::connection& conn, const std::string& data, size_t& offset);
     static void handle_change_status(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset);
     static void handle_send_message(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset);
     static void handle_get_history(crow::websocket::connection& conn, const std::string& sender, const std::string& data, size_t& offset);
+    static uint8_t read_uint8(const std::string& data, size_t& offset);
+    static std::string read_string_8(const std::string& data, size_t& offset);
     static void notify_user_joined(const std::string& username, UserStatus st);
     static void notify_user_status_change(const std::string& username, UserStatus st);
     static void notify_new_message(const std::string& sender, const std::string& msg, bool is_private, const std::string& recipient);

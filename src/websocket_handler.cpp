@@ -11,6 +11,7 @@ std::unordered_map<std::string, ConnectionData> connections;
 std::mutex connections_mutex;
 std::unordered_map<std::string, std::vector<std::pair<std::string, std::string>>> chat_history;
 std::unordered_map<std::string, UserStatus> last_user_status;
+std::vector<std::pair<std::string, std::string>> general_chat_history;
 
 std::string generate_uuid()
 {
@@ -229,24 +230,30 @@ void WebSocketHandler::handle_send_message(crow::websocket::connection &conn, co
 void WebSocketHandler::handle_get_history(crow::websocket::connection &conn, const std::string &sender, const std::string &data, size_t &offset)
 {
     std::string target = read_string_8(data, offset);
-    std::string chat_id = (target == "~")
-                              ? "~"
-                              : ((sender < target) ? (sender + "|" + target) : (target + "|" + sender));
+    std::vector<std::pair<std::string, std::string>> messages;
 
-    auto it = chat_history.find(chat_id);
-    if (it == chat_history.end())
+    if (target == "~")
     {
-        std::string empty;
-        empty.push_back((char)0x56);
-        empty.push_back((char)0);
-        conn.send_binary(empty);
-        return;
+        // Obtener historial del chat general
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        messages = general_chat_history;
     }
-    const auto &messages = it->second;
+    else
+    {
+        // Obtener historial de chat privado
+        std::string chat_id = (sender < target) ? (sender + "|" + target) : (target + "|" + sender);
+        auto it = chat_history.find(chat_id);
+        if (it != chat_history.end())
+        {
+            messages = it->second;
+        }
+    }
+
     uint8_t num_msgs = (messages.size() > 255) ? 255 : static_cast<uint8_t>(messages.size());
     std::string payload;
     payload.push_back((char)0x56);
     payload.push_back((char)num_msgs);
+
     for (size_t i = 0; i < num_msgs; i++)
     {
         const auto &[author, text] = messages[i];
@@ -255,9 +262,11 @@ void WebSocketHandler::handle_get_history(crow::websocket::connection &conn, con
         payload.push_back((char)text.size());
         payload += text;
     }
-    Logger::getInstance().log("Enviando 0x56 historial de chat: " + chat_id + " (" + std::to_string(num_msgs) + " mensajes)");
+
+    Logger::getInstance().log("Enviando 0x56 historial (" + std::to_string(num_msgs) + " mensajes)");
     conn.send_binary(payload);
 }
+
 
 void WebSocketHandler::on_open(crow::websocket::connection &conn, const std::string &username)
 {
@@ -484,8 +493,10 @@ void WebSocketHandler::send_private_message(const std::string &sender, const std
 
 void WebSocketHandler::send_broadcast(const std::string &sender, const std::string &msg)
 {
-    std::lock_guard<std::mutex> lock(connections_mutex);
-    chat_history["~"].push_back({sender, msg});
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        general_chat_history.push_back({sender, msg});
+    }
     notify_new_message(sender, msg, false, "");
 }
 

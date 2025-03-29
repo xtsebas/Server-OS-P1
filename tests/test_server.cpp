@@ -385,6 +385,68 @@ void test_keep_status()
     std::cout << "test_keep_status\n";
 }
 
+void test_handle_get_history_messages()
+{
+    std::cout << "test_handle_get_history_messages\n";
+
+    connections.clear();
+    chat_history.clear();
+    general_chat_history.clear();
+
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+    MockConnection conn_bob("127.0.0.1");
+    WebSocketHandler::on_open(conn_bob, "bob");
+
+    // Enviar mensaje a chat general
+    std::string msg_general;
+    msg_general.push_back((char)0x04);
+    msg_general.push_back((char)1); // len "~"
+    msg_general += "~";
+    msg_general.push_back((char)5);
+    msg_general += "hello";
+
+    std::cout << "Enviando mensaje al chat general...\n";
+    WebSocketHandler::on_message(conn_alice, msg_general, true);
+    assert(general_chat_history.size() == 1 && "Mensaje no guardado en el chat general");
+
+    // Enviar mensaje privado a Bob
+    std::string msg_privado;
+    msg_privado.push_back((char)0x04);
+    msg_privado.push_back((char)3); // len "bob"
+    msg_privado += "bob";
+    msg_privado.push_back((char)4);
+    msg_privado += "hola";
+
+    std::cout << "Enviando mensaje privado a Bob...\n";
+    WebSocketHandler::on_message(conn_alice, msg_privado, true);
+    std::string chat_id = "alice|bob";
+    assert(chat_history[chat_id].size() == 1 && "Mensaje privado no guardado correctamente");
+
+    // Solicitar historial de chat general
+    std::string req_general;
+    req_general.push_back((char)0x05);
+    req_general.push_back((char)1);
+    req_general += "~";
+
+    std::cout << "Solicitando historial del chat general...\n";
+    size_t old_count = conn_alice.sent_messages.size();
+    WebSocketHandler::on_message(conn_alice, req_general, true);
+    assert(conn_alice.sent_messages.size() == old_count + 1 && "No se envió historial de chat general");
+
+    // Solicitar historial privado
+    std::string req_privado;
+    req_privado.push_back((char)0x05);
+    req_privado.push_back((char)3);
+    req_privado += "bob";
+
+    std::cout << "Solicitando historial privado...\n";
+    old_count = conn_alice.sent_messages.size();
+    WebSocketHandler::on_message(conn_alice, req_privado, true);
+    assert(conn_alice.sent_messages.size() == old_count + 1 && "No se envió historial de chat privado");
+
+    std::cout << "test_handle_get_history_messages\n";
+}
 
 extern bool testing_mode;
 int main()
@@ -402,6 +464,7 @@ int main()
         test_handle_send_message();
         test_handle_get_history();
         test_keep_status();
+        test_handle_get_history_messages();
 
         std::cout << "\nTodos los tests de test_server pasaron con éxito.\n";
         return 0;

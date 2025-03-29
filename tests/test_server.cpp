@@ -8,12 +8,6 @@
 #include "../include/logger.h"
 #include "../include/websocket_global.h"
 
-/*
- MockConnection simula una crow::websocket::connection
- para poder capturar lo que el servidor enviaría,
- sin necesidad de un WebSocket real.
-*/
-
 class MockConnection : public crow::websocket::connection
 {
 public:
@@ -61,10 +55,7 @@ private:
     std::string remote_ip_;
 };
 
-/*
- Utilities to parse the first opcode, length, etc.
- From your existing read_uint8 / read_string_8 logic.
-*/
+
 
 static uint8_t get_opcode(const std::string &data)
 {
@@ -85,205 +76,291 @@ static std::string get_string_8(const std::string &data, size_t &offset)
     return s;
 }
 
-/*
- Helper for checking buffer content easily
-*/
 
 void check_opcode(const std::string &payload, uint8_t expected_opcode, const std::string &test_name)
 {
-    assert(get_opcode(payload) == expected_opcode && ("❌ " + test_name + " -> opcode no coincide").c_str());
-    std::cout << "✅ " << test_name << ": opcode " << (int)expected_opcode << " verificado\n";
+    assert(get_opcode(payload) == expected_opcode && ("x " + test_name + " -> opcode no coincide").c_str());
+    std::cout << test_name << ": opcode " << (int)expected_opcode << " verificado\n";
 }
 
-/*
- We'll run a series of small functions, each returning void and using 'assert'.
- If any assert fails, the program ends with an error.
-*/
+
 
 void test_on_open_and_duplicate()
 {
-    /*
-      Limpieza de 'connections' global y 'chat_history' si tu WebSocketHandler lo requiere.
-      Asume que 'connections' y 'chat_history' son extern o static en websocket_handler.cpp
-    */
+
     connections.clear();
 
     // 1) Primer usuario: alice
     MockConnection conn_alice("127.0.0.1");
     WebSocketHandler::on_open(conn_alice, "alice");
-    assert(connections.size() == 1 && "❌ on_open: No se registró alice");
-    assert(!conn_alice.closed && "❌ on_open: alice cerrada indebidamente");
+    assert(connections.size() == 1 && "on_open: No se registró alice");
+    assert(!conn_alice.closed && "on_open: alice cerrada indebidamente");
 
     // 2) Conectar duplicado: alice de nuevo
     MockConnection conn_alice2("127.0.0.1");
     WebSocketHandler::on_open(conn_alice2, "alice");
-    assert(conn_alice2.closed && "❌ on_open: Nombre duplicado no fue cerrado");
-    assert(connections.size() == 1 && "❌ on_open: se insertó duplicado erroneamente");
+    assert(conn_alice2.closed && "on_open: Nombre duplicado no fue cerrado");
+    assert(connections.size() == 1 && "on_open: se insertó duplicado erroneamente");
 
     // 3) Reconexión: dejar conn_alice a nullptr y reabrir
     connections["alice"].conn = nullptr;
     MockConnection conn_alice_re("127.0.0.1");
     WebSocketHandler::on_open(conn_alice_re, "alice");
     // Reconexión
-    assert(!conn_alice_re.closed && "❌ on_open: reconexión erroneamente cerrada");
-    assert(connections["alice"].conn == &conn_alice_re && "❌ on_open: reconexión no reusó la misma entry");
-    std::cout << "✅ test_on_open_and_duplicate\n";
+    assert(!conn_alice_re.closed && " on_open: reconexión erroneamente cerrada");
+    assert(connections["alice"].conn == &conn_alice_re && "on_open: reconexión no reusó la misma entry");
+    std::cout << "test_on_open_and_duplicate\n";
 }
 
 void test_list_users()
 {
-    // asume que 'alice' sigue en connections
-    // Add 'bob'
+
     MockConnection conn_bob("127.0.0.1");
     WebSocketHandler::on_open(conn_bob, "bob");
     assert(!conn_bob.closed);
 
-    // 2) Llamar handle_list_users
     size_t old_count = conn_bob.sent_messages.size();
     WebSocketHandler::handle_list_users(conn_bob);
-    assert(conn_bob.sent_messages.size() == old_count + 1 && "❌ handle_list_users no envió nada");
+    assert(conn_bob.sent_messages.size() == old_count + 1 && "handle_list_users no envió nada");
 
-    // parse the last message
+
     std::string payload = conn_bob.sent_messages.back();
     check_opcode(payload, 0x51, "test_list_users");
 
     size_t offset = 1;
     uint8_t n = (uint8_t)payload[offset++];
-    std::cout << "📊 test_list_users — payload users: " << (int)n << " vs connections.size(): " << connections.size() << "\n";
+    std::cout << "test_list_users — payload users: " << (int)n << " vs connections.size(): " << connections.size() << "\n";
     std::cout << "Esperaba " << connections.size() << " usuarios, recibí: " << (int)n << "\n";
-    assert(n == connections.size() && "❌ handle_list_users: número de usuarios no coincide");
+    assert(n == connections.size() && "handle_list_users: número de usuarios no coincide");
 
     for (int i = 0; i < n; i++)
     {
         std::string name = get_string_8(payload, offset);
         uint8_t st = (uint8_t)payload[offset++];
-        // std::cout << "User " << i << " => " << name << ", st=" << (int)st << "\n";
-        // Podrías checar valores exactos
     }
 
-    std::cout << "✅ test_list_users\n";
+    std::cout << "test_list_users\n";
 }
 
 void test_handle_get_user_info()
 {
-    // bob pide info de alice
-    MockConnection conn_bob("127.0.0.1");
-    connections["bob"].conn = &conn_bob;
-    size_t old_count = conn_bob.sent_messages.size();
+    std::cout << "test_handle_get_user_info\n";
 
-    // build data => [0x02][len 'alice']['alice']
+    connections.clear();
+    chat_history.clear();
+
+
+    connections["alice"] = ConnectionData{
+        "alice",
+        "uuid-alice",
+        nullptr,
+        UserStatus::ACTIVO,
+        std::chrono::steady_clock::now()
+    };
+
+    MockConnection conn_bob("127.0.0.1");
+    connections["bob"] = ConnectionData{
+        "bob",
+        "uuid-bob",
+        &conn_bob,
+        UserStatus::ACTIVO,
+        std::chrono::steady_clock::now()
+    };
+
     std::string data;
     data.push_back((char)0x02);
     data.push_back((char)5);
     data += "alice";
 
-    // offset sim
-    size_t offset = 0;
-    // call handle_get_user_info
-    WebSocketHandler::handle_get_user_info(conn_bob, data, offset);
+    size_t old_count = conn_bob.sent_messages.size();
 
-    assert(conn_bob.sent_messages.size() == old_count + 1 && "❌ get_user_info no envió nada");
+
+    WebSocketHandler::on_message(conn_bob, data, true); 
+
+
+    assert(conn_bob.sent_messages.size() == old_count + 1 && "get_user_info no envió nada");
+
     std::string payload = conn_bob.sent_messages.back();
+
+    std::cout << "Payload recibido (hex): ";
+    for (unsigned char c : payload) {
+        printf("%02X ", c);
+    }
+    std::cout << "\n";
+
     check_opcode(payload, 0x52, "test_handle_get_user_info");
-    offset = 1;
+
+    size_t offset = 1;
     std::string name = get_string_8(payload, offset);
     uint8_t st = (uint8_t)payload[offset++];
-    assert(name == "alice" && "❌ get_user_info: nombre no coincide");
-    std::cout << "✅ test_handle_get_user_info\n";
+
+    assert(name == "alice" && "get_user_info: nombre no coincide");
+    assert(st == 1 && "get_user_info: status no es ACTIVO");
+
+    std::cout << "test_handle_get_user_info\n";
 }
+
+
 
 void test_handle_change_status()
 {
-    // Cambiar status de 'alice' => op=3 => newStatus=2 => OCUPADO
+    std::cout << "test_handle_change_status\n";
+
+    connections.clear();
+    chat_history.clear();
+
     MockConnection conn_alice("127.0.0.1");
-    connections["alice"].conn = &conn_alice;
+    connections["alice"] = ConnectionData{
+        "alice",
+        "uuid-alice",
+        &conn_alice,
+        UserStatus::ACTIVO,
+        std::chrono::steady_clock::now()
+    };
 
-    // data => [0x03][uint8_status=2]
+    MockConnection conn_bob("127.0.0.1");
+    connections["bob"] = ConnectionData{
+        "bob",
+        "uuid-bob",
+        &conn_bob,
+        UserStatus::ACTIVO,
+        std::chrono::steady_clock::now()
+    };
+
     std::string data;
-    data.push_back((char)0x03);
-    data.push_back((char)2);
+    data.push_back((char)0x03); 
+    data.push_back((char)2);    
 
-    size_t offset = 0;
-    WebSocketHandler::handle_change_status(conn_alice, "alice", data, offset);
+    size_t old_count = conn_alice.sent_messages.size();
 
-    // Revisa si 'alice' cambió a status=2
+    WebSocketHandler::on_message(conn_alice, data, true);
+
     assert(connections["alice"].status == UserStatus::OCUPADO && "❌ handle_change_status: alice no pasó a OCUPADO");
 
-    // Revisa notificación 0x54
-    assert(!conn_alice.sent_messages.empty() && "❌ handle_change_status: no se envió nada al propio alice");
+    assert(conn_alice.sent_messages.size() > old_count && "❌ no se notificó a alice");
     std::string payload = conn_alice.sent_messages.back();
     check_opcode(payload, 0x54, "test_handle_change_status");
-    offset = 1;
+
+    size_t offset = 1;
     std::string name = get_string_8(payload, offset);
     uint8_t st = (uint8_t)payload[offset++];
-    assert(name == "alice" && st == 2 && "❌ handle_change_status: datos de notificación incorrectos");
 
-    std::cout << "✅ test_handle_change_status\n";
+    assert(name == "alice" && st == 2 && "❌ handle_change_status: datos incorrectos");
+
+    std::cout << "test_handle_change_status\n";
 }
+
 
 void test_handle_send_message()
 {
-    // mandar un msg => [dest, msg]
+    std::cout << "test_handle_send_message\n";
+
+    connections.clear();
+    chat_history.clear();
+
+    std::cout << "test_handle_send_message 1\n";
+
     MockConnection conn_alice("127.0.0.1");
-    connections["alice"].conn = &conn_alice;
+    connections["alice"] = ConnectionData{
+        "alice", "uuid-alice", &conn_alice,
+        UserStatus::ACTIVO, std::chrono::steady_clock::now()
+    };
+
+    std::cout << "test_handle_send_message 2\n";
 
     MockConnection conn_bob("127.0.0.1");
-    connections["bob"].conn = &conn_bob;
+    connections["bob"] = ConnectionData{
+        "bob", "uuid-bob", &conn_bob,
+        UserStatus::ACTIVO, std::chrono::steady_clock::now()
+    };
 
-    // data => [0x04][len 'bob']['bob'][len 'hola']['hola']
+    std::cout << "test_handle_send_message 3\n";
+
     std::string data;
-    data.push_back((char)0x04);
-    data.push_back((char)3);
-    data += "bob";
-    data.push_back((char)4);
-    data += "hola";
+    data.push_back((char)0x04);        
+    data.push_back((char)3); data += "bob";   
+    data.push_back((char)4); data += "hola";  
 
-    size_t offset = 0;
-    WebSocketHandler::handle_send_message(conn_alice, "alice", data, offset);
+    std::cout << "test_handle_send_message 4\n";
 
-    // Revisa si 'bob' recibió (check conn_bob.sent_messages)
-    assert(!conn_bob.sent_messages.empty() && "❌ handle_send_message no envió nada a bob");
+    size_t old_count = conn_bob.sent_messages.size();
+
+    WebSocketHandler::on_message(conn_alice, data, true);
+
+    assert(conn_bob.sent_messages.size() == old_count + 1 && "❌ handle_send_message no envió nada a bob");
+
     std::string payload = conn_bob.sent_messages.back();
     check_opcode(payload, 0x55, "test_handle_send_message to bob");
 
-    offset = 1;
+    size_t offset = 1;
     std::string origin = get_string_8(payload, offset);
     std::string msg = get_string_8(payload, offset);
+
     assert(origin == "alice" && msg == "hola" && "❌ handle_send_message: contenido incorrecto");
-    std::cout << "✅ test_handle_send_message\n";
+
+    std::cout << "test_handle_send_message\n";
 }
+
 
 void test_handle_get_history()
 {
-    // Se asume que hay algun historial
-    // Por ejemplo, handle_send_message ya guardó 'hola' en 'alice|bob'
-    // data => [0x05][len chat][chat]
+    std::cout << "test_handle_get_history\n";
+
+    connections.clear();
+    chat_history.clear();
+
     MockConnection conn_alice("127.0.0.1");
-    connections["alice"].conn = &conn_alice;
+    connections["alice"] = ConnectionData{
+        "alice", "uuid-alice", &conn_alice,
+        UserStatus::ACTIVO, std::chrono::steady_clock::now()
+    };
+
+    MockConnection conn_bob("127.0.0.1");
+    connections["bob"] = ConnectionData{
+        "bob", "uuid-bob", &conn_bob,
+        UserStatus::ACTIVO, std::chrono::steady_clock::now()
+    };
+
+    std::string chat_id = (std::string("alice") < "bob") ? "alice|bob" : "bob|alice";
+    chat_history[chat_id].push_back({"alice", "hola"});
+    chat_history[chat_id].push_back({"bob", "respuesta"});
 
     std::string data;
-    data.push_back((char)0x05);
-    data.push_back((char)3);
-    data += "bob"; // chat "bob"
+    data.push_back((char)0x05);         
+    data.push_back((char)3);            
+    data += "bob";
 
-    size_t offset = 0;
-    WebSocketHandler::handle_get_history(conn_alice, "alice", data, offset);
+    size_t old_count = conn_alice.sent_messages.size();
 
-    // Revisa lo último enviado a alice
-    assert(!conn_alice.sent_messages.empty() && "❌ handle_get_history no envió nada");
+    WebSocketHandler::on_message(conn_alice, data, true);
+
+    assert(conn_alice.sent_messages.size() == old_count + 1 && "handle_get_history no envió nada");
+
     std::string payload = conn_alice.sent_messages.back();
     check_opcode(payload, 0x56, "test_handle_get_history");
-    // parsear la data => [0x56][num][ (len_user, user, len_msg, msg)*n ]
-    offset = 1;
-    uint8_t n = (uint8_t)payload[offset++];
-    assert(n > 0 && "❌ handle_get_history: sin mensajes? esperabamos >=1");
-    std::cout << "✅ test_handle_get_history\n";
+
+    size_t offset = 1;
+    uint8_t num = (uint8_t)payload[offset++];
+
+    std::cout << "test_handle_get_history recibió " << (int)num << " mensajes\n";
+    assert(num >= 2 && "handle_get_history: no se recibieron los mensajes esperados");
+
+    for (int i = 0; i < num; i++) {
+        std::string autor = get_string_8(payload, offset);
+        std::string contenido = get_string_8(payload, offset);
+        std::cout << "- " << autor << ": " << contenido << "\n";
+    }
+
+    std::cout << "test_handle_get_history\n";
 }
+
+
+
 
 extern bool testing_mode;
 int main()
 {
-    testing_mode = true;  
+    testing_mode = true;
     Logger::getInstance().startLogging();
     std::cout << "Iniciando test_server...\n";
 
@@ -296,17 +373,17 @@ int main()
         test_handle_send_message();
         test_handle_get_history();
 
-        std::cout << "\n✅ Todos los tests de test_server pasaron con éxito.\n";
+        std::cout << "\nTodos los tests de test_server pasaron con éxito.\n";
         return 0;
     }
     catch (const std::exception &e)
     {
-        std::cerr << "❌ Excepción en test_server: " << e.what() << std::endl;
+        std::cerr << "Excepción en test_server: " << e.what() << std::endl;
         return 1;
     }
     catch (...)
     {
-        std::cerr << "❌ Excepción desconocida en test_server.\n";
+        std::cerr << "Excepción desconocida en test_server.\n";
         return 1;
     }
 }

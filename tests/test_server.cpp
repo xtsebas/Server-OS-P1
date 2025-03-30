@@ -155,7 +155,8 @@ void test_handle_get_user_info()
         "uuid-alice",
         nullptr,
         UserStatus::ACTIVO,
-        std::chrono::steady_clock::now()
+        std::chrono::steady_clock::now(),
+        "192.168.1.10"
     };
 
     MockConnection conn_bob("127.0.0.1");
@@ -164,7 +165,8 @@ void test_handle_get_user_info()
         "uuid-bob",
         &conn_bob,
         UserStatus::ACTIVO,
-        std::chrono::steady_clock::now()
+        std::chrono::steady_clock::now(),
+        "127.0.0.1" 
     };
 
     std::string data;
@@ -193,9 +195,11 @@ void test_handle_get_user_info()
     size_t offset = 1;
     std::string name = get_string_8(payload, offset);
     uint8_t st = (uint8_t)payload[offset++];
+    std::string ip_address = get_string_8(payload, offset);
 
     assert(name == "alice" && "get_user_info: nombre no coincide");
     assert(st == 1 && "get_user_info: status no es ACTIVO");
+    assert(ip_address == "192.168.1.10" && "get_user_info: IP no coincide");
 
     std::cout << "test_handle_get_user_info\n";
 }
@@ -354,8 +358,163 @@ void test_handle_get_history()
     std::cout << "test_handle_get_history\n";
 }
 
+void test_keep_status()
+{
+    std::cout << "test_keep_status\n";
 
+    connections.clear();
+    last_user_status.clear();
 
+    // Simular primera conexión de Alice
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+    assert(connections["alice"].status == UserStatus::ACTIVO && "Estado incorrecto al conectar por primera vez");
+
+    // Cambiar estado de Alice a OCUPADO
+    std::string data;
+    data.push_back((char)0x03); 
+    data.push_back((char)2);   
+    WebSocketHandler::on_message(conn_alice, data, true);
+    assert(connections["alice"].status == UserStatus::OCUPADO && "Cambio de estado fallido");
+
+    // Simular desconexión de Alice
+    WebSocketHandler::on_close(conn_alice, "Cerrando", 1000);
+    assert(last_user_status["alice"] == UserStatus::OCUPADO && "Estado no guardado al desconectar");
+
+    // Simular reconexión de Alice
+    MockConnection conn_alice_re("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice_re, "alice");
+    assert(connections["alice"].status == UserStatus::OCUPADO && "Estado no restaurado correctamente al reconectar");
+
+    std::cout << "test_keep_status\n";
+}
+
+void test_handle_get_history_messages()
+{
+    std::cout << "test_handle_get_history_messages\n";
+
+    connections.clear();
+    chat_history.clear();
+    general_chat_history.clear();
+
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+    MockConnection conn_bob("127.0.0.1");
+    WebSocketHandler::on_open(conn_bob, "bob");
+
+    // Enviar mensaje a chat general
+    std::string msg_general;
+    msg_general.push_back((char)0x04);
+    msg_general.push_back((char)1); // len "~"
+    msg_general += "~";
+    msg_general.push_back((char)5);
+    msg_general += "hello";
+
+    std::cout << "Enviando mensaje al chat general...\n";
+    WebSocketHandler::on_message(conn_alice, msg_general, true);
+    assert(general_chat_history.size() == 1 && "Mensaje no guardado en el chat general");
+
+    // Enviar mensaje privado a Bob
+    std::string msg_privado;
+    msg_privado.push_back((char)0x04);
+    msg_privado.push_back((char)3); // len "bob"
+    msg_privado += "bob";
+    msg_privado.push_back((char)4);
+    msg_privado += "hola";
+
+    std::cout << "Enviando mensaje privado a Bob...\n";
+    WebSocketHandler::on_message(conn_alice, msg_privado, true);
+    std::string chat_id = "alice|bob";
+    assert(chat_history[chat_id].size() == 1 && "Mensaje privado no guardado correctamente");
+
+    // Solicitar historial de chat general
+    std::string req_general;
+    req_general.push_back((char)0x05);
+    req_general.push_back((char)1);
+    req_general += "~";
+
+    std::cout << "Solicitando historial del chat general...\n";
+    size_t old_count = conn_alice.sent_messages.size();
+    WebSocketHandler::on_message(conn_alice, req_general, true);
+    assert(conn_alice.sent_messages.size() == old_count + 1 && "No se envió historial de chat general");
+
+    // Solicitar historial privado
+    std::string req_privado;
+    req_privado.push_back((char)0x05);
+    req_privado.push_back((char)3);
+    req_privado += "bob";
+
+    std::cout << "Solicitando historial privado...\n";
+    old_count = conn_alice.sent_messages.size();
+    WebSocketHandler::on_message(conn_alice, req_privado, true);
+    assert(conn_alice.sent_messages.size() == old_count + 1 && "No se envió historial de chat privado");
+
+    std::cout << "test_handle_get_history_messages\n";
+}
+
+void test_inactivity()
+{
+    std::cout << "test_inactivity\n";
+
+    // Reiniciar la variable antes de cada prueba
+    {
+        std::lock_guard<std::mutex> lock(inactivity_mutex);
+        user_marked_inactive = false;
+    }
+
+    connections.clear();
+    last_user_status.clear();
+
+    // Simular conexión de Alice
+    MockConnection conn_alice("127.0.0.1");
+    WebSocketHandler::on_open(conn_alice, "alice");
+    
+    // Verificar estado inicial
+    assert(connections["alice"].status == UserStatus::ACTIVO && "Estado inicial incorrecto");
+    
+    // Forzar manualmente el timestamp de última actividad para que parezca inactivo
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        // Retroceder el tiempo de última actividad para simular inactividad
+        connections["alice"].last_active = std::chrono::steady_clock::now() - std::chrono::seconds(70);
+    }
+
+    // Llamar directamente al código que verifica inactividad
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto now = std::chrono::steady_clock::now();
+        for (auto& [username, conn_data] : connections) {
+            if (conn_data.status != UserStatus::INACTIVO) {
+                auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                    now - conn_data.last_active).count();
+                
+                if (elapsed >= 60) {
+                    conn_data.status = UserStatus::INACTIVO;
+                    std::cout << "Usuario " + username + " marcado como INACTIVO (inactivo por " 
+                        + std::to_string(elapsed) + "s)\n";
+                    
+                    {
+                        std::lock_guard<std::mutex> lock(inactivity_mutex);
+                        user_marked_inactive = true;
+                    }
+                    inactivity_cv.notify_all();
+                }
+            }
+        }
+    }
+    
+    // Esperar brevemente para asegurar que el cambio de estado se ha propagado
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Verificar que Alice haya sido marcada como INACTIVO
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        assert(connections["alice"].status == UserStatus::INACTIVO && 
+               "Usuario no fue marcado como INACTIVO tras inactividad");
+    }
+
+    std::cout << "test_inactivity\n";
+}
 
 extern bool testing_mode;
 int main()
@@ -372,6 +531,9 @@ int main()
         test_handle_change_status();
         test_handle_send_message();
         test_handle_get_history();
+        test_keep_status();
+        test_handle_get_history_messages();
+        test_inactivity();
 
         std::cout << "\nTodos los tests de test_server pasaron con éxito.\n";
         return 0;

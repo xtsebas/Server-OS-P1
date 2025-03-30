@@ -7,7 +7,7 @@ main = do
     setCurrentDirectory "build"
 
     putStrLn "Compilando con make..."
-    callCommand "make CrowSample"
+    callCommand "make TestServer"
 
-    putStrLn "Ejecutando CrowSample..."
-    callCommand "./CrowSample"
+    putStrLn "Ejecutando Tests..."
+    callCommand "./TestServer"

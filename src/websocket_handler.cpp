@@ -122,34 +122,40 @@ void WebSocketHandler::notify_new_message(const std::string &sender, const std::
     payload += sender;
     payload.push_back((char)msg.size());
     payload += msg;
-    if (is_private)
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex);
-        auto itA = connections.find(sender);
-        auto itB = connections.find(recipient);
-        if (itA != connections.end() && itA->second.conn)
+
+    auto send_task = std::async(std::launch::async, [payload, is_private, sender, recipient]() {
+        Logger::getInstance().log("Iniciando envío desde un thread separado. Thread ID: " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+        if (is_private)
         {
-            Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos") + ": " + msg);
-            itA->second.conn->send_binary(payload);
-        }
-        if (itB != connections.end() && itB->second.conn)
-        {
-            Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos") + ": " + msg);
-            itB->second.conn->send_binary(payload);
-        }
-    }
-    else
-    {
-        std::lock_guard<std::mutex> lock(connections_mutex);
-        for (auto &[uname, cd] : connections)
-        {
-            if (cd.conn)
+            std::lock_guard<std::mutex> lock(connections_mutex);
+            auto itA = connections.find(sender);
+            auto itB = connections.find(recipient);
+            if (itA != connections.end() && itA->second.conn)
             {
-                Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos") + ": " + msg);
-                cd.conn->send_binary(payload);
+                Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos"));
+                itA->second.conn->send_binary(payload);
+            }
+            if (itB != connections.end() && itB->second.conn)
+            {
+                Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos") + ": ");
+                itB->second.conn->send_binary(payload);
             }
         }
-    }
+        else
+        {
+            std::lock_guard<std::mutex> lock(connections_mutex);
+            for (auto &[uname, cd] : connections)
+            {
+                if (cd.conn)
+                {
+                    Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + (is_private ? recipient : "todos") + ": ");
+                    cd.conn->send_binary(payload);
+                }
+            }
+        }
+        Logger::getInstance().log("Envío completado desde el thread. Thread ID: " + std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id())));
+    });
+    send_task.wait();
 }
 
 void WebSocketHandler::handle_list_users(crow::websocket::connection &conn)

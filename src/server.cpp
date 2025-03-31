@@ -6,10 +6,10 @@ void setup_routes(crow::SimpleApp &app)
 {
     Logger::getInstance().startLogging();
 
-    CROW_ROUTE(app, "/")([]()
-                         { return "WebSocket Server is running!"; });
+    /*CROW_ROUTE(app, "/")([]()
+                         { return "WebSocket Server is running!"; });*/
 
-    CROW_WEBSOCKET_ROUTE(app, "/ws")
+    CROW_WEBSOCKET_ROUTE(app, "/")
         .onaccept([](const crow::request &req, void **userdata)
                   {
                       const char *name = req.url_params.get("name");

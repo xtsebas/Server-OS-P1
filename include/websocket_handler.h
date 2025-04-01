@@ -5,8 +5,14 @@
 #include <string>
 #include <chrono>
 #include <thread>
+#include <future>
 
-enum class UserStatus { ACTIVO = 1, OCUPADO = 2, INACTIVO = 3 };
+enum class UserStatus { 
+    DISCONNECTED = 0,
+    ACTIVO = 1, 
+    OCUPADO = 2, 
+    INACTIVO = 3 
+};
 
 struct ConnectionData {
     std::string username;

@@ -520,10 +520,6 @@ void WebSocketHandler::update_status(const std::string &username, UserStatus sta
         {
             it->second.status = status;
             it->second.last_active = std::chrono::steady_clock::now();
-<<<<<<< HEAD
-=======
-            Logger::getInstance().log(username + " cambió su estado a " + std::to_string(userStatusToByte(status)));
->>>>>>> b2a53c3df67533cd4c1f3a15f68cef287f7bf43a
             user_found = true;
             has_active_connection = it->second.conn != nullptr;
             Logger::getInstance().log(username + " cambió su estado a " + std::to_string(userStatusToByte(status)));

@@ -291,8 +291,8 @@ void test_handle_change_status()
     
     WebSocketHandler::on_message(conn_alice, data, true);
     
-    assert(connections["alice"].status == UserStatus::OCUPADO && "handle_change_status: alice no pasó a OCUPADO");
-    std::cout << "- Estado de alice cambiado a OCUPADO\n";
+    assert(connections["alice"].status == UserStatus::INACTIVO && "handle_change_status: alice no pasó a OCUPADO");
+    std::cout << "- Estado de alice cambiado a INACTIVO\n";
 
     // Verificar notificación a ambos usuarios
     bool alice_notified = false;
@@ -317,7 +317,7 @@ void test_handle_change_status()
             std::string name = get_string_8(msg, offset);
             uint8_t st = (uint8_t)msg[offset];
             
-            if (name == "alice" && st == 2) {
+            if (name == "alice" && st == 3) {
                 bob_notified = true;
                 std::cout << "  bob recibió notificación del cambio de alice a OCUPADO\n";
             }

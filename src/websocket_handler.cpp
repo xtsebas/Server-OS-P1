@@ -447,6 +447,7 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
 void WebSocketHandler::update_status(const std::string &username, UserStatus status, bool notify)
 {
     bool user_found = false;
+    bool has_active_connection = false;
 
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
@@ -455,12 +456,13 @@ void WebSocketHandler::update_status(const std::string &username, UserStatus sta
         {
             it->second.status = status;
             it->second.last_active = std::chrono::steady_clock::now();
-            Logger::getInstance().log(username + " cambió su estado");
             user_found = true;
+            has_active_connection = it->second.conn != nullptr;
+            Logger::getInstance().log(username + " cambió su estado a " + std::to_string(userStatusToByte(status)));
         }
     }
 
-    if (notify && user_found)
+    if (notify && user_found && has_active_connection)
     {
         notify_user_status_change(username, status);
     }

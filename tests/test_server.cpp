@@ -213,43 +213,53 @@ void test_handle_change_status()
     connections.clear();
     chat_history.clear();
 
-    MockConnection conn_alice("127.0.0.1");
+    MockConnection conn("127.0.0.1");
     connections["alice"] = ConnectionData{
         "alice",
         "uuid-alice",
-        &conn_alice,
+        &conn,
         UserStatus::ACTIVO,
         std::chrono::steady_clock::now()
     };
 
-    MockConnection conn_bob("127.0.0.1");
-    connections["bob"] = ConnectionData{
-        "bob",
-        "uuid-bob",
-        &conn_bob,
-        UserStatus::ACTIVO,
-        std::chrono::steady_clock::now()
+    auto simulate_status_change = [&](uint8_t new_status_byte, UserStatus expected_status) {
+        std::string data;
+        data.push_back((char)0x03);       // Opcode cambio de estado
+        data.push_back((char)new_status_byte);  // Estado deseado
+
+        size_t old_count = conn.sent_messages.size();
+
+        WebSocketHandler::on_message(conn, data, true);
+        assert(connections["alice"].status == expected_status && "❌ Estado no actualizado correctamente");
+
+        assert(conn.sent_messages.size() > old_count && "❌ No se notificó cambio de estado");
+        std::string payload = conn.sent_messages.back();
+        check_opcode(payload, 0x54, "Cambio de estado");
+
+        size_t offset = 1;
+        std::string name = get_string_8(payload, offset);
+        uint8_t st = (uint8_t)payload[offset++];
+
+        assert(name == "alice" && st == new_status_byte && "❌ Payload incorrecto");
     };
 
-    std::string data;
-    data.push_back((char)0x03); 
-    data.push_back((char)2);    
+    // ACTIVO -> OCUPADO
+    simulate_status_change(2, UserStatus::OCUPADO);
 
-    size_t old_count = conn_alice.sent_messages.size();
+    // OCUPADO -> ACTIVO
+    simulate_status_change(1, UserStatus::ACTIVO);
 
-    WebSocketHandler::on_message(conn_alice, data, true);
+    // ACTIVO -> INACTIVO
+    simulate_status_change(3, UserStatus::INACTIVO);
 
-    assert(connections["alice"].status == UserStatus::OCUPADO && "❌ handle_change_status: alice no pasó a OCUPADO");
+    // INACTIVO -> OCUPADO
+    simulate_status_change(2, UserStatus::OCUPADO);
 
-    assert(conn_alice.sent_messages.size() > old_count && "❌ no se notificó a alice");
-    std::string payload = conn_alice.sent_messages.back();
-    check_opcode(payload, 0x54, "test_handle_change_status");
+    // OCUPADO -> INACTIVO
+    simulate_status_change(3, UserStatus::INACTIVO);
 
-    size_t offset = 1;
-    std::string name = get_string_8(payload, offset);
-    uint8_t st = (uint8_t)payload[offset++];
-
-    assert(name == "alice" && st == 2 && "❌ handle_change_status: datos incorrectos");
+    // INACTIVO -> ACTIVO
+    simulate_status_change(1, UserStatus::ACTIVO);
 
     std::cout << "test_handle_change_status\n";
 }

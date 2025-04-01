@@ -224,7 +224,18 @@ void WebSocketHandler::handle_change_status(crow::websocket::connection &conn, c
         send_error(conn, 2);  // Estado inválido
         return;
     }
-    
+
+    Logger::getInstance().log("Cambio de estado solicitado para " + username + ": " + std::to_string(raw_status));
+
+    UserStatus oldStatus = UserStatus::DISCONNECTED;
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto it = connections.find(username);
+        if (it != connections.end()) {
+            oldStatus = it->second.status;
+        }
+    }
+
     UserStatus newStatus;
     switch (raw_status)
     {
@@ -244,6 +255,8 @@ void WebSocketHandler::handle_change_status(crow::websocket::connection &conn, c
         send_error(conn, 2);  // Estado inválido
         return;
     }
+    Logger::getInstance().log("Transición de estado: " + std::to_string(userStatusToByte(oldStatus)) + " -> " + std::to_string(raw_status));
+
     update_status(sender, newStatus);
 }
 
@@ -426,6 +439,8 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
     }
     
     std::string sender = "Desconocido";
+    std::string usuario_a_reactivar;
+
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
         for (auto &[uname, conn_data] : connections)
@@ -434,16 +449,20 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
             {
                 sender = uname;
                 conn_data.last_active = std::chrono::steady_clock::now();
-                
-                // Si estaba inactivo y envía un mensaje, pasar a activo
+    
                 if (conn_data.status == UserStatus::INACTIVO) {
-                    update_status(uname, UserStatus::ACTIVO);
+                    usuario_a_reactivar = uname; // <-- Posponer la reactivación
                 }
-                
+    
                 Logger::getInstance().log("Actualizando tiempo de actividad para " + sender);
                 break;
             }
         }
+    }
+    
+    // ✅ Ahora sí: fuera del lock
+    if (!usuario_a_reactivar.empty()) {
+        update_status(usuario_a_reactivar, UserStatus::ACTIVO);
     }
     
     try
@@ -511,24 +530,32 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
 void WebSocketHandler::update_status(const std::string &username, UserStatus status, bool notify)
 {
     bool user_found = false;
-    bool has_active_connection = false;
+    bool should_notify = false;
+    UserStatus oldStatus = UserStatus::DISCONNECTED;
 
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
         auto it = connections.find(username);
         if (it != connections.end())
         {
+            oldStatus = it->second.status;
             it->second.status = status;
             it->second.last_active = std::chrono::steady_clock::now();
             user_found = true;
-            has_active_connection = it->second.conn != nullptr;
-            Logger::getInstance().log(username + " cambió su estado a " + std::to_string(userStatusToByte(status)));
+            should_notify = notify || it->second.conn != nullptr;  // Always notify if connected
+            Logger::getInstance().log(username + " cambió su estado de " + 
+                std::to_string(userStatusToByte(oldStatus)) + " a " + 
+                std::to_string(userStatusToByte(status)));
         }
     }
 
-    if (notify && user_found && has_active_connection)
+    if (should_notify)
     {
-        notify_user_status_change(username, status);
+        try {
+            notify_user_status_change(username, status);
+        } catch (const std::exception& e) {
+            Logger::getInstance().log("Error al notificar cambio de estado: " + std::string(e.what()));
+        }
     }
 }
 
@@ -591,34 +618,51 @@ void WebSocketHandler::start_inactivity_monitor()
     std::thread([] {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(5));
-            std::lock_guard<std::mutex> lock(connections_mutex);
-            auto now = std::chrono::steady_clock::now();
+            
+            std::vector<std::string> users_to_notify;
 
-            for (auto& [username, conn_data] : connections) {
-                if (conn_data.conn && conn_data.status != UserStatus::INACTIVO && conn_data.status != UserStatus::DISCONNECTED) {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
+            {
+                std::lock_guard<std::mutex> lock(connections_mutex);
+                auto now = std::chrono::steady_clock::now();
 
-                    if (elapsed >= 60) {
-                        conn_data.status = UserStatus::INACTIVO;
+                for (auto& [username, conn_data] : connections) {
+                    if (conn_data.conn &&
+                        conn_data.status != UserStatus::INACTIVO &&
+                        conn_data.status != UserStatus::DISCONNECTED) {
+                        
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
 
-                        Logger::getInstance().log("Usuario " + username + " marcado como INACTIVO (inactivo por " + std::to_string(elapsed) + "s)");
-                        {
-                            std::lock_guard<std::mutex> lock(inactivity_mutex);
-                            user_marked_inactive = true;
-                        }
-                        notify_user_status_change(username, UserStatus::INACTIVO);
-                        inactivity_cv.notify_all();
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        {
-                            std::lock_guard<std::mutex> lock(inactivity_mutex);
-                            user_marked_inactive = false;
+                        if (elapsed >= 60) {
+                            conn_data.status = UserStatus::INACTIVO;
+                            Logger::getInstance().log("Usuario " + username + " marcado como INACTIVO (inactivo por " + std::to_string(elapsed) + "s)");
+                            
+                            {
+                                std::lock_guard<std::mutex> lock(inactivity_mutex);
+                                user_marked_inactive = true;
+                            }
+
+                            users_to_notify.push_back(username);
                         }
                     }
+                }
+            }
+
+            for (const auto& username : users_to_notify) {
+                notify_user_status_change(username, UserStatus::INACTIVO);
+            }
+
+            if (!users_to_notify.empty()) {
+                inactivity_cv.notify_all();
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                {
+                    std::lock_guard<std::mutex> lock(inactivity_mutex);
+                    user_marked_inactive = false;
                 }
             }
         }
     }).detach();
 }
+
 
 void WebSocketHandler::start_disconnection_cleanup()
 {

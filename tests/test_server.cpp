@@ -271,47 +271,61 @@ void test_handle_change_status()
         std::chrono::steady_clock::now()
     };
 
-    auto simulate_status_change = [&](uint8_t new_status_byte, UserStatus expected_status) {
+    auto simulate_status_change = [&](uint8_t new_status_byte, UserStatus expected_status, const std::string &description) {
         std::string data;
-        data.push_back((char)0x03);       // Opcode cambio de estado
-        data.push_back((char)new_status_byte);  // Estado deseado
-
+        data.push_back((char)0x03);                 // Opcode
+        data.push_back((char)5);                    // Longitud de "alice"
+        data += "alice";                            // Nombre
+        data.push_back((char)new_status_byte);      // Nuevo estado
+    
         size_t old_count = conn.sent_messages.size();
-
-        WebSocketHandler::on_message(conn, data, true);
-        assert(connections["alice"].status == expected_status && "❌ Estado no actualizado correctamente");
-
-        assert(conn.sent_messages.size() > old_count && "❌ No se notificó cambio de estado");
-        std::string payload = conn.sent_messages.back();
-        check_opcode(payload, 0x54, "Cambio de estado");
-
-        size_t offset = 1;
-        std::string name = get_string_8(payload, offset);
-        uint8_t st = (uint8_t)payload[offset++];
-
-        assert(name == "alice" && st == new_status_byte && "❌ Payload incorrecto");
+        
+        try {
+            std::cout << "Probando transición: " << description << std::endl;
+            WebSocketHandler::on_message(conn, data, true);
+            
+            assert(connections["alice"].status == expected_status && ("❌ " + description + ": Estado no actualizado correctamente").c_str());
+            
+            assert(conn.sent_messages.size() > old_count && ("❌ " + description + ": No se notificó cambio de estado").c_str());
+            
+            std::string payload = conn.sent_messages.back();
+            check_opcode(payload, 0x54, description);
+            
+            size_t offset = 1;
+            std::string name = get_string_8(payload, offset);
+            uint8_t st = (uint8_t)payload[offset++];
+            
+            assert(name == "alice" && st == new_status_byte && ("❌ " + description + ": Payload incorrecto").c_str());
+            
+            std::cout << "✅ " << description << " pasado correctamente\n";
+        } catch (const std::exception& e) {
+            std::cout << "❌ " << description << " falló con error: " << e.what() << std::endl;
+            assert(false && ("❌ " + description + ": Exception: " + e.what()).c_str());
+        }
     };
+    
 
     // ACTIVO -> OCUPADO
-    simulate_status_change(2, UserStatus::OCUPADO);
+    simulate_status_change(2, UserStatus::OCUPADO, "ACTIVO -> OCUPADO");
 
     // OCUPADO -> ACTIVO
-    simulate_status_change(1, UserStatus::ACTIVO);
+    simulate_status_change(1, UserStatus::ACTIVO, "OCUPADO -> ACTIVO");
 
     // ACTIVO -> INACTIVO
-    simulate_status_change(3, UserStatus::INACTIVO);
+    simulate_status_change(3, UserStatus::INACTIVO, "ACTIVO -> INACTIVO");
 
     // INACTIVO -> OCUPADO
-    simulate_status_change(2, UserStatus::OCUPADO);
+    simulate_status_change(2, UserStatus::OCUPADO, "INACTIVO -> OCUPADO");
 
     // OCUPADO -> INACTIVO
-    simulate_status_change(3, UserStatus::INACTIVO);
+    simulate_status_change(3, UserStatus::INACTIVO, "OCUPADO -> INACTIVO");
 
     // INACTIVO -> ACTIVO
-    simulate_status_change(1, UserStatus::ACTIVO);
+    simulate_status_change(1, UserStatus::ACTIVO, "INACTIVO -> ACTIVO");
 
     std::cout << "test_handle_change_status: Todas las pruebas pasaron\n";
 }
+
 
 void test_handle_send_message()
 {

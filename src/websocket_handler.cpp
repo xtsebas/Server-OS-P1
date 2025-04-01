@@ -212,6 +212,9 @@ void WebSocketHandler::handle_get_user_info(crow::websocket::connection &conn, c
     conn.send_binary(payload);
 }
 
+// Modificación a websocket_handler.cpp
+// Ubicar el método handle_change_status y aplicar estos cambios
+
 void WebSocketHandler::handle_change_status(crow::websocket::connection &conn, const std::string &sender, const std::string &data, size_t &offset)
 {
     std::string username = read_string_8(data, offset);
@@ -244,6 +247,43 @@ void WebSocketHandler::handle_change_status(crow::websocket::connection &conn, c
         send_error(conn, 2);  // Estado inválido
         return;
     }
+
+    // --------INICIO DE CAMBIOS--------
+    
+    // Obtener el estado actual para logging
+    UserStatus currentStatus = UserStatus::DISCONNECTED;
+    {
+        std::lock_guard<std::mutex> lock(connections_mutex);
+        auto it = connections.find(sender);
+        if (it != connections.end()) {
+            currentStatus = it->second.status;
+        }
+    }
+    
+    // Añadir logging detallado para poder diagnosticar problemas
+    Logger::getInstance().log("Cambiando estado de " + sender + 
+                              " de " + std::to_string(static_cast<int>(currentStatus)) + 
+                              " a " + std::to_string(static_cast<int>(newStatus)));
+    
+    // Si está cambiando desde INACTIVO, asegurar que el estado de inactividad está limpio
+    if (currentStatus == UserStatus::INACTIVO) {
+        Logger::getInstance().log("Usuario " + sender + " cambiando desde INACTIVO - reseteando bandera de inactividad");
+        
+        // Resetear la bandera de inactividad para evitar bloqueos
+        {
+            std::lock_guard<std::mutex> lock(inactivity_mutex);
+            user_marked_inactive = false;
+        }
+        
+        // Notificar a todas las threads que están esperando
+        inactivity_cv.notify_all();
+        
+        // Pequeña pausa para permitir que otras threads se actualicen
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    
+    // --------FIN DE CAMBIOS--------
+    
     update_status(sender, newStatus);
 }
 
@@ -584,36 +624,52 @@ void WebSocketHandler::send_broadcast(const std::string &sender, const std::stri
     notify_new_message(sender, msg, false, "");
 }
 
+// Modificación a start_inactivity_monitor en websocket_handler.cpp
+
 void WebSocketHandler::start_inactivity_monitor()
 {
     std::thread([] {
         while (true) {
             std::this_thread::sleep_for(std::chrono::seconds(5));
-            std::lock_guard<std::mutex> lock(connections_mutex);
-            auto now = std::chrono::steady_clock::now();
+            
+            // Usar un bloque para limitar el alcance del lock
+            {
+                std::lock_guard<std::mutex> lock(connections_mutex);
+                auto now = std::chrono::steady_clock::now();
 
-            for (auto& [username, conn_data] : connections) {
-                if (conn_data.conn && conn_data.status != UserStatus::INACTIVO && conn_data.status != UserStatus::DISCONNECTED) {
-                    auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
+                for (auto& [username, conn_data] : connections) {
+                    if (conn_data.conn && conn_data.status != UserStatus::INACTIVO && conn_data.status != UserStatus::DISCONNECTED) {
+                        auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - conn_data.last_active).count();
 
-                    if (elapsed >= 60) {
-                        conn_data.status = UserStatus::INACTIVO;
+                        if (elapsed >= 60) {
+                            conn_data.status = UserStatus::INACTIVO;
 
-                        Logger::getInstance().log("Usuario " + username + " marcado como INACTIVO (inactivo por " + std::to_string(elapsed) + "s)");
-                        {
-                            std::lock_guard<std::mutex> lock(inactivity_mutex);
-                            user_marked_inactive = true;
-                        }
-                        notify_user_status_change(username, UserStatus::INACTIVO);
-                        inactivity_cv.notify_all();
-                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-                        {
-                            std::lock_guard<std::mutex> lock(inactivity_mutex);
-                            user_marked_inactive = false;
+                            Logger::getInstance().log("Usuario " + username + " marcado como INACTIVO (inactivo por " + std::to_string(elapsed) + "s)");
+                            
+                            // Bloque más corto para el mutex de inactividad
+                            {
+                                std::lock_guard<std::mutex> inactivity_lock(inactivity_mutex);
+                                user_marked_inactive = true;
+                            }
+                            
+                            // Notificar el cambio de estado fuera del bloque del mutex
+                            notify_user_status_change(username, UserStatus::INACTIVO);
+                            
+                            // Notificar a la condición variable
+                            inactivity_cv.notify_all();
+                            
+                            // Breve pausa para dar tiempo a otros procesos
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                            
+                            // Resetear la bandera de inactividad
+                            {
+                                std::lock_guard<std::mutex> inactivity_lock(inactivity_mutex);
+                                user_marked_inactive = false;
+                            }
                         }
                     }
                 }
-            }
+            } // Fin del lock de connections_mutex
         }
     }).detach();
 }

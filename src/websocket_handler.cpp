@@ -32,7 +32,7 @@ std::string generate_uuid()
 static void send_error(crow::websocket::connection &conn, uint8_t error_code)
 {
     std::string payload;
-    payload.push_back((char)0x50);  // Código de ERROR
+    payload.push_back((char)50);  // Código de ERROR (antes 0x50, ahora 50)
     payload.push_back((char)error_code);
     conn.send_binary(payload);
     
@@ -83,10 +83,10 @@ void WebSocketHandler::notify_user_joined(const std::string &username, UserStatu
     if (testing_mode) return;
     Logger::getInstance().log("ENTRO A NOTIFY ");
     std::lock_guard<std::mutex> lock(connections_mutex);
-    Logger::getInstance().log("Enviando 0x53 a todos excepto: " + username);
+    Logger::getInstance().log("Enviando 53 a todos excepto: " + username);
 
     std::string payload;
-    payload.push_back((char)0x53);  // Usuario se acaba de registrar
+    payload.push_back((char)53);  // Usuario se acaba de registrar (antes 0x53, ahora 53)
     payload.push_back((char)username.size());
     payload += username;
     payload.push_back((char)userStatusToByte(st));
@@ -107,7 +107,7 @@ void WebSocketHandler::notify_user_status_change(const std::string &username, Us
 {
     std::lock_guard<std::mutex> lock(connections_mutex);
     std::string payload;
-    payload.push_back((char)0x54);  // Usuario cambió estatus
+    payload.push_back((char)54);  // Usuario cambió estatus (antes 0x54, ahora 54)
     payload.push_back((char)username.size());
     payload += username;
     payload.push_back((char)userStatusToByte(st));
@@ -119,7 +119,7 @@ void WebSocketHandler::notify_user_status_change(const std::string &username, Us
     {
         if (conn_data.conn)
         {
-            Logger::getInstance().log("Enviando 0x54 a: " + conn_data.username);
+            Logger::getInstance().log("Enviando 54 a: " + conn_data.username);
             conn_data.conn->send_binary(payload);
         }
     }
@@ -128,7 +128,7 @@ void WebSocketHandler::notify_user_status_change(const std::string &username, Us
 void WebSocketHandler::notify_new_message(const std::string &sender, const std::string &msg, bool is_private, const std::string &recipient)
 {
     std::string payload;
-    payload.push_back((char)0x55);  // Código de Recibió mensaje
+    payload.push_back((char)55);  // Código de Recibió mensaje (antes 0x55, ahora 55)
     payload.push_back((char)sender.size());
     payload += sender;
     payload.push_back((char)msg.size());
@@ -143,12 +143,12 @@ void WebSocketHandler::notify_new_message(const std::string &sender, const std::
             auto itB = connections.find(recipient);
             if (itA != connections.end() && itA->second.conn)
             {
-                Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + sender);
+                Logger::getInstance().log("Enviando 55 de " + sender + " a " + sender);
                 itA->second.conn->send_binary(payload);
             }
             if (itB != connections.end() && itB->second.conn)
             {
-                Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + recipient);
+                Logger::getInstance().log("Enviando 55 de " + sender + " a " + recipient);
                 itB->second.conn->send_binary(payload);
             }
         }
@@ -159,7 +159,7 @@ void WebSocketHandler::notify_new_message(const std::string &sender, const std::
             {
                 if (cd.conn)
                 {
-                    Logger::getInstance().log("Enviando 0x55 de " + sender + " a " + uname);
+                    Logger::getInstance().log("Enviando 55 de " + sender + " a " + uname);
                     cd.conn->send_binary(payload);
                 }
             }
@@ -174,7 +174,7 @@ void WebSocketHandler::handle_list_users(crow::websocket::connection &conn)
     Logger::getInstance().log("ENTRO A HANDLE LIST USERS");
     std::lock_guard<std::mutex> lock(connections_mutex);
     std::string payload;
-    payload.push_back((char)0x51);  // Código de respuesta a listar usuarios
+    payload.push_back((char)51);  // Código de respuesta a listar usuarios (antes 0x51, ahora 51)
     payload.push_back((char)connections.size());
     for (const auto &[username, conn_data] : connections)
     {
@@ -182,7 +182,7 @@ void WebSocketHandler::handle_list_users(crow::websocket::connection &conn)
         payload += username;
         payload.push_back((char)userStatusToByte(conn_data.status));
     }
-    Logger::getInstance().log("Enviando 0x51 a " + conn.get_remote_ip() + " (" + std::to_string(connections.size()) + " usuarios)");
+    Logger::getInstance().log("Enviando 51 a " + conn.get_remote_ip() + " (" + std::to_string(connections.size()) + " usuarios)");
     Logger::getInstance().log("Payload: " + std::to_string(payload.size()) + " bytes");
     conn.send_binary(payload);
 }
@@ -202,12 +202,12 @@ void WebSocketHandler::handle_get_user_info(crow::websocket::connection &conn, c
     
     // Crear payload según el protocolo (solo nombre y status)
     std::string payload;
-    payload.push_back((char)0x52);  // Código de respuesta a obtener usuario
+    payload.push_back((char)52);  // Código de respuesta a obtener usuario (antes 0x52, ahora 52)
     payload.push_back((char)requested_name.size());
     payload += requested_name;
     payload.push_back((char)userStatusToByte(st));
     
-    Logger::getInstance().log("Enviando 0x52 info de usuario: " + requested_name + " (estado = " + 
+    Logger::getInstance().log("Enviando 52 info de usuario: " + requested_name + " (estado = " + 
                             std::to_string(userStatusToByte(st)) + ")");    
     conn.send_binary(payload);
 }
@@ -315,7 +315,7 @@ void WebSocketHandler::handle_get_history(crow::websocket::connection &conn, con
 
     uint8_t num_msgs = (messages.size() > 255) ? 255 : static_cast<uint8_t>(messages.size());
     std::string payload;
-    payload.push_back((char)0x56);  // Código de respuesta a obtener historial
+    payload.push_back((char)56);  // Código de respuesta a obtener historial (antes 0x56, ahora 56)
     payload.push_back((char)num_msgs);
 
     for (size_t i = 0; i < num_msgs; i++)
@@ -327,7 +327,7 @@ void WebSocketHandler::handle_get_history(crow::websocket::connection &conn, con
         payload += text;
     }
 
-    Logger::getInstance().log("Enviando 0x56 historial (" + std::to_string(num_msgs) + " mensajes)");
+    Logger::getInstance().log("Enviando 56 historial (" + std::to_string(num_msgs) + " mensajes)");
     conn.send_binary(payload);
 }
 
@@ -456,8 +456,8 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
                 sender = uname;
                 conn_data.last_active = std::chrono::steady_clock::now();
     
-                // Solo considerar la reactivación si el mensaje es de tipo "enviar mensaje" (opcode 0x04)
-                if (conn_data.status == UserStatus::INACTIVO && opcode == 0x04) {
+                // Solo considerar la reactivación si el mensaje es de tipo "enviar mensaje" (opcode 4)
+                if (conn_data.status == UserStatus::INACTIVO && opcode == 4) {
                     usuario_a_reactivar = uname;
                     Logger::getInstance().log("Usuario " + uname + " será reactivado por enviar un mensaje");
                 } else if (conn_data.status == UserStatus::INACTIVO) {
@@ -471,7 +471,7 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
         }
     }
     
-    // ✅ Ahora sí: fuera del lock, solo reactivar si es un mensaje de chat (opcode 0x04)
+    // Fuera del lock, reactivar si es un mensaje de chat (opcode 4)
     if (!usuario_a_reactivar.empty()) {
         update_status(usuario_a_reactivar, UserStatus::ACTIVO);
     }
@@ -533,7 +533,7 @@ void WebSocketHandler::on_close(crow::websocket::connection &conn, const std::st
 
     if (!disconnected_user.empty())
     {
-        // Notificar a todos los usuarios utilizando el código 0x54 (cambio de estado)
+        // Notificar a todos los usuarios utilizando el código 54 (cambio de estado)
         notify_user_status_change(disconnected_user, UserStatus::DISCONNECTED);
     }
 }

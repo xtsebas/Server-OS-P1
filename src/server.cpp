@@ -2,12 +2,10 @@
 #include "../include/websocket_handler.h"
 #include "../include/logger.h"
 
-void setup_routes(crow::SimpleApp &app)
+void setup_routes(App& app)
 {
     Logger::getInstance().startLogging();
 
-    /*CROW_ROUTE(app, "/")([]()
-                         { return "WebSocket Server is running!"; });*/
 
     CROW_WEBSOCKET_ROUTE(app, "/")
         .onaccept([](const crow::request &req, void **userdata)
@@ -38,15 +36,13 @@ void setup_routes(crow::SimpleApp &app)
                         delete static_cast<std::string *>(conn.userdata());
                         conn.userdata(nullptr);
                     } });
-
-    CROW_ROUTE(app, "/users")
-        .methods("GET"_method)([]()
-                               { return WebSocketHandler::list_users(); });
+                
 }
+
 
 void start_server()
 {
-    crow::SimpleApp app;
+    App app;
     setup_routes(app);
     app.bindaddr("0.0.0.0").port(18080).multithreaded().run();
 }

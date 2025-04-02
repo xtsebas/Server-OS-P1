@@ -440,6 +440,12 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
     
     std::string sender = "Desconocido";
     std::string usuario_a_reactivar;
+    uint8_t opcode = 0;
+    
+    // Leer el opcode del mensaje antes de procesar
+    if (data.size() >= 1) {
+        opcode = (uint8_t)data[0];
+    }
 
     {
         std::lock_guard<std::mutex> lock(connections_mutex);
@@ -450,8 +456,13 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
                 sender = uname;
                 conn_data.last_active = std::chrono::steady_clock::now();
     
-                if (conn_data.status == UserStatus::INACTIVO) {
-                    usuario_a_reactivar = uname; // <-- Posponer la reactivación
+                // Solo considerar la reactivación si el mensaje es de tipo "enviar mensaje" (opcode 0x04)
+                if (conn_data.status == UserStatus::INACTIVO && opcode == 0x04) {
+                    usuario_a_reactivar = uname;
+                    Logger::getInstance().log("Usuario " + uname + " será reactivado por enviar un mensaje");
+                } else if (conn_data.status == UserStatus::INACTIVO) {
+                    Logger::getInstance().log("Usuario " + uname + " mantiene estado INACTIVO (opcode=" + 
+                                            std::to_string(opcode) + ", no es mensaje)");
                 }
     
                 Logger::getInstance().log("Actualizando tiempo de actividad para " + sender);
@@ -460,7 +471,7 @@ void WebSocketHandler::on_message(crow::websocket::connection &conn, const std::
         }
     }
     
-    // ✅ Ahora sí: fuera del lock
+    // ✅ Ahora sí: fuera del lock, solo reactivar si es un mensaje de chat (opcode 0x04)
     if (!usuario_a_reactivar.empty()) {
         update_status(usuario_a_reactivar, UserStatus::ACTIVO);
     }

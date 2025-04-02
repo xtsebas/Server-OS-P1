@@ -84,24 +84,23 @@ Todos los mensajes enviados y recibidos son estrictamente binarios y siguen este
 
 | Opcode | Acción             |
 |--------|--------------------|
-| 0x01   | Listar usuarios    |
-| 0x02   | Obtener info       |
-| 0x03   | Cambiar estado     |
-| 0x04   | Enviar mensaje     |
-| 0x05   | Obtener historial  |
+|   1   | Listar usuarios    |
+| 2   | Obtener info       |
+| 3   | Cambiar estado     |
+| 4   | Enviar mensaje     |
+| 5   | Obtener historial  |
 
 ### Servidor → Cliente
 
 | Opcode | Acción                |
 |--------|------------------------|
-| 0x50   | Error                  |
-| 0x51   | Lista de usuarios      |
-| 0x52   | Info usuario           |
-| 0x53   | Notificación de ingreso|
-| 0x54   | Cambio de estado       |
-| 0x55   | Mensaje recibido       |
-| 0x56   | Historial              |
-| 0x57   | Desconexión            |
+| 50   | Error                  |
+| 51   | Lista de usuarios      |
+| 52   | Info usuario           |
+| 53   | Notificación de ingreso|
+| 54   | Cambio de estado       |
+| 55   | Mensaje recibido       |
+| 56   | Historial              |
 
 ---
 

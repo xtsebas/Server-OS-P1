@@ -44,5 +44,15 @@ void start_server()
 {
     App app;
     setup_routes(app);
-    app.bindaddr("0.0.0.0").port(18080).multithreaded().run();
+    
+    // Determinar número óptimo de hilos (usar hardware_concurrency o un valor específico)
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if (num_threads == 0) num_threads = 4; // Valor por defecto si no se puede determinar
+    
+    Logger::getInstance().log("Iniciando servidor con " + std::to_string(num_threads) + " hilos");
+    
+    app.bindaddr("0.0.0.0")
+       .port(18080)
+       .concurrency(num_threads)
+       .run();
 }

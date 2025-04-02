@@ -23,6 +23,9 @@ struct ConnectionData {
     std::string ip_address;
 };
 
+extern std::unordered_map<std::string, ConnectionData> connections;
+extern std::mutex connections_mutex;
+
 class WebSocketHandler {
 public:
     static void on_open(crow::websocket::connection& conn, const std::string& username);
